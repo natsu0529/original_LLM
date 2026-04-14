@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from config import REPO_ROOT, ModelConfig
+from data import Tokenizer, tokenizer_from_state_dict
 from model import DecoderOnlyTransformer, count_parameters
 
 
@@ -63,31 +64,35 @@ def set_seed(seed: int) -> None:
 def load_generator(
     checkpoint_path: Path,
     device: torch.device,
-) -> tuple[DecoderOnlyTransformer, dict]:
+) -> tuple[DecoderOnlyTransformer, Tokenizer, dict]:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     model_config = ModelConfig(**checkpoint["model_config"])
+    tokenizer = tokenizer_from_state_dict(checkpoint.get("tokenizer_state"))
     model = DecoderOnlyTransformer(model_config)
     model.load_state_dict(checkpoint["model_state"])
     model = model.to(device)
     model.eval()
-    return model, checkpoint
+    return model, tokenizer, checkpoint
 
 
 @torch.no_grad()
 def generate_text(
     model: DecoderOnlyTransformer,
+    tokenizer: Tokenizer,
     prompt: str,
     max_new_tokens: int,
     temperature: float,
     top_k: int,
     device: torch.device,
 ) -> str:
-    tokens = list(prompt.encode("utf-8"))
+    tokens = tokenizer.encode(prompt)
     if not tokens:
-        tokens = [ord(" ")]
+        tokens = tokenizer.encode(" ")
+    if not tokens:
+        raise ValueError("Tokenizer failed to encode fallback prompt")
 
     idx = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
 
@@ -113,7 +118,7 @@ def generate_text(
 
         idx = torch.cat((idx, next_token), dim=1)
 
-    return bytes(idx[0].tolist()).decode("utf-8", errors="ignore")
+    return tokenizer.decode(idx[0].tolist())
 
 
 def generated_suffix(prompt: str, generated: str) -> str:
@@ -122,17 +127,26 @@ def generated_suffix(prompt: str, generated: str) -> str:
     return generated
 
 
-def print_meta(checkpoint_path: Path, checkpoint: dict, model: DecoderOnlyTransformer, device: torch.device) -> None:
+def print_meta(
+    checkpoint_path: Path,
+    checkpoint: dict,
+    tokenizer: Tokenizer,
+    model: DecoderOnlyTransformer,
+    device: torch.device,
+) -> None:
     print(f"checkpoint={checkpoint_path}")
     print(f"device={device}")
     print(f"step={checkpoint.get('step')}")
     print(f"best_val_loss={checkpoint.get('best_val_loss')}")
     print(f"parameter_count={count_parameters(model)}")
+    print(f"tokenizer_type={tokenizer.tokenizer_type}")
+    print(f"vocab_size={model.config.vocab_size}")
     print(f"model_config={checkpoint.get('model_config')}")
 
 
 def interactive_loop(
     model: DecoderOnlyTransformer,
+    tokenizer: Tokenizer,
     args: argparse.Namespace,
     device: torch.device,
 ) -> None:
@@ -173,6 +187,7 @@ def interactive_loop(
 
         generated = generate_text(
             model=model,
+            tokenizer=tokenizer,
             prompt=prompt,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
@@ -190,17 +205,18 @@ def main() -> int:
     args = parse_args()
     set_seed(args.seed)
     device = choose_device(args.device)
-    model, checkpoint = load_generator(args.checkpoint, device)
+    model, tokenizer, checkpoint = load_generator(args.checkpoint, device)
 
     if args.show_meta:
-        print_meta(args.checkpoint, checkpoint, model, device)
+        print_meta(args.checkpoint, checkpoint, tokenizer, model, device)
 
     if args.interactive:
-        interactive_loop(model, args, device)
+        interactive_loop(model, tokenizer, args, device)
         return 0
 
     generated = generate_text(
         model=model,
+        tokenizer=tokenizer,
         prompt=args.prompt,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,

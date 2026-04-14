@@ -16,9 +16,7 @@ HEADER_GUIDE_RE = re.compile(
     r"\A.*?^-{20,}\n.*?テキスト中に現れる記号について.*?^-{20,}\n+",
     flags=re.DOTALL | re.MULTILINE,
 )
-FOOTER_START_RE = re.compile(
-    r"(?m)^(底本：|青空文庫作成ファイル：)"
-)
+FOOTER_START_RE = re.compile(r"(?m)^(底本：|青空文庫作成ファイル：)")
 AOZORA_NOTE_RE = re.compile(r"［＃.*?］")
 RUBY_RE = re.compile(r"《.*?》")
 RUBY_PIPE_RE = re.compile(r"｜")
@@ -33,23 +31,91 @@ class WorkText:
     original_text: str
     cleaned_text: str
 
-    @property
-    def byte_length(self) -> int:
-        return len(self.cleaned_text.encode("utf-8"))
-
 
 @dataclass(slots=True)
 class SplitSummary:
     work_count: int
-    byte_count: int
+    token_count: int
 
 
-class ByteDataset:
+class ByteTokenizer:
+    tokenizer_type = "byte"
     vocab_size = 256
 
+    def encode(self, text: str) -> list[int]:
+        return list(text.encode("utf-8"))
+
+    def decode(self, token_ids: list[int]) -> str:
+        return bytes(token_ids).decode("utf-8", errors="ignore")
+
+    def state_dict(self) -> dict[str, object]:
+        return {"tokenizer_type": self.tokenizer_type}
+
+    @classmethod
+    def build(cls, _: list[str]) -> ByteTokenizer:
+        return cls()
+
+    @classmethod
+    def from_state_dict(cls, _: dict[str, object] | None = None) -> ByteTokenizer:
+        return cls()
+
+
+class CharTokenizer:
+    tokenizer_type = "char"
+    unk_token = "<unk>"
+    unk_display = "\uFFFD"
+
+    def __init__(self, id_to_token: list[str], unk_token: str = "<unk>") -> None:
+        self.id_to_token = id_to_token
+        self.token_to_id = {token: idx for idx, token in enumerate(id_to_token)}
+        self.unk_token = unk_token
+        self.unk_id = self.token_to_id[unk_token]
+
+    @property
+    def vocab_size(self) -> int:
+        return len(self.id_to_token)
+
+    def encode(self, text: str) -> list[int]:
+        return [self.token_to_id.get(char, self.unk_id) for char in text]
+
+    def decode(self, token_ids: list[int]) -> str:
+        chars: list[str] = []
+        for token_id in token_ids:
+            if 0 <= token_id < len(self.id_to_token):
+                token = self.id_to_token[token_id]
+                chars.append(self.unk_display if token == self.unk_token else token)
+            else:
+                chars.append(self.unk_display)
+        return "".join(chars)
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "tokenizer_type": self.tokenizer_type,
+            "unk_token": self.unk_token,
+            "id_to_token": self.id_to_token,
+        }
+
+    @classmethod
+    def build(cls, texts: list[str]) -> CharTokenizer:
+        unique_chars = sorted({char for text in texts for char in text})
+        id_to_token = [cls.unk_token, *unique_chars]
+        return cls(id_to_token=id_to_token, unk_token=cls.unk_token)
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, object]) -> CharTokenizer:
+        id_to_token = state.get("id_to_token")
+        unk_token = state.get("unk_token", cls.unk_token)
+        if not isinstance(id_to_token, list) or not id_to_token:
+            raise ValueError("Invalid char tokenizer state")
+        return cls(id_to_token=id_to_token, unk_token=str(unk_token))
+
+
+Tokenizer = ByteTokenizer | CharTokenizer
+
+
+class TokenDataset:
     def __init__(self, config: DataConfig) -> None:
         self.config = config
-        self.random = random.Random(config.seed)
         self.generator = torch.Generator().manual_seed(config.seed)
         self._manifest_by_id = load_manifest(config.manifest_path)
         loaded_works = load_work_texts(
@@ -58,17 +124,32 @@ class ByteDataset:
             limit=config.limit,
         )
         self.works = shuffle_works(loaded_works, config.seed)
+        self.tokenizer = build_tokenizer(
+            tokenizer_type=config.tokenizer_type,
+            texts=[work.cleaned_text for work in self.works],
+        )
+        self.vocab_size = self.tokenizer.vocab_size
         self.train_works, self.valid_works = split_works(self.works, config.train_split)
-        self.train_data = encode_works(self.train_works)
-        self.valid_data = encode_works(self.valid_works)
-        ensure_split_size("train", self.train_data, config.context_length, config.min_bytes_per_split)
-        ensure_split_size("valid", self.valid_data, config.context_length, config.min_bytes_per_split)
+        self.train_data = encode_works(self.train_works, self.tokenizer)
+        self.valid_data = encode_works(self.valid_works, self.tokenizer)
+        ensure_split_size(
+            "train",
+            self.train_data,
+            config.context_length,
+            config.min_tokens_per_split,
+        )
+        ensure_split_size(
+            "valid",
+            self.valid_data,
+            config.context_length,
+            config.min_tokens_per_split,
+        )
 
     def train_summary(self) -> SplitSummary:
-        return summarize(self.train_works)
+        return summarize(self.train_works, self.tokenizer)
 
     def valid_summary(self) -> SplitSummary:
-        return summarize(self.valid_works)
+        return summarize(self.valid_works, self.tokenizer)
 
     def get_batch(self, split: str) -> tuple[torch.Tensor, torch.Tensor]:
         if split == "train":
@@ -93,10 +174,36 @@ class ByteDataset:
         )
         return x, y
 
+    def encode_text(self, text: str) -> list[int]:
+        return self.tokenizer.encode(text)
+
+    def decode_tokens(self, token_ids: list[int]) -> str:
+        return self.tokenizer.decode(token_ids)
+
+
+def build_tokenizer(tokenizer_type: str, texts: list[str]) -> Tokenizer:
+    if tokenizer_type == "char":
+        return CharTokenizer.build(texts)
+    if tokenizer_type == "byte":
+        return ByteTokenizer.build(texts)
+    raise ValueError(f"Unsupported tokenizer_type: {tokenizer_type}")
+
+
+def tokenizer_from_state_dict(state: dict[str, object] | None) -> Tokenizer:
+    if state is None:
+        return ByteTokenizer.from_state_dict()
+
+    tokenizer_type = state.get("tokenizer_type", "byte")
+    if tokenizer_type == "char":
+        return CharTokenizer.from_state_dict(state)
+    if tokenizer_type == "byte":
+        return ByteTokenizer.from_state_dict(state)
+    raise ValueError(f"Unsupported tokenizer_type in checkpoint: {tokenizer_type}")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Inspect and batch byte-level training data for the Dazai corpus."
+        description="Inspect and batch tokenized training data for the Dazai corpus."
     )
     parser.add_argument(
         "--data-dir",
@@ -111,35 +218,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional manifest produced by the downloader.",
     )
     parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Only load the first N works.",
+        "--tokenizer-type",
+        choices=["char", "byte"],
+        default=DataConfig().tokenizer_type,
+        help="Tokenization mode used for training.",
     )
-    parser.add_argument(
-        "--train-split",
-        type=float,
-        default=DataConfig().train_split,
-        help="Fraction of works assigned to train.",
-    )
-    parser.add_argument(
-        "--context-length",
-        type=int,
-        default=DataConfig().context_length,
-        help="Number of bytes per sequence.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=DataConfig().batch_size,
-        help="Number of sequences per batch.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=DataConfig().seed,
-        help="Random seed used for batch sampling.",
-    )
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--train-split", type=float, default=DataConfig().train_split)
+    parser.add_argument("--context-length", type=int, default=DataConfig().context_length)
+    parser.add_argument("--batch-size", type=int, default=DataConfig().batch_size)
+    parser.add_argument("--seed", type=int, default=DataConfig().seed)
     return parser.parse_args()
 
 
@@ -223,7 +311,6 @@ def load_work_texts(
 
     if not works:
         raise ValueError(f"No usable text files found in {data_dir}")
-
     return works
 
 
@@ -244,17 +331,17 @@ def shuffle_works(works: list[WorkText], seed: int) -> list[WorkText]:
     return shuffled
 
 
-def encode_works(works: list[WorkText]) -> torch.Tensor:
+def encode_works(works: list[WorkText], tokenizer: Tokenizer) -> torch.Tensor:
     separator = "\n\n"
     merged_text = separator.join(work.cleaned_text for work in works)
-    byte_values = list(merged_text.encode("utf-8"))
-    return torch.tensor(byte_values, dtype=torch.long)
+    token_ids = tokenizer.encode(merged_text)
+    return torch.tensor(token_ids, dtype=torch.long)
 
 
-def summarize(works: list[WorkText]) -> SplitSummary:
+def summarize(works: list[WorkText], tokenizer: Tokenizer) -> SplitSummary:
     return SplitSummary(
         work_count=len(works),
-        byte_count=sum(work.byte_length for work in works),
+        token_count=sum(len(tokenizer.encode(work.cleaned_text)) for work in works),
     )
 
 
@@ -262,12 +349,12 @@ def ensure_split_size(
     split_name: str,
     data: torch.Tensor,
     context_length: int,
-    min_bytes_per_split: int,
+    min_tokens_per_split: int,
 ) -> None:
-    required = max(context_length + 1, min_bytes_per_split)
+    required = max(context_length + 1, min_tokens_per_split)
     if len(data) < required:
         raise ValueError(
-            f"{split_name} split is too small: {len(data)} bytes, need at least {required}"
+            f"{split_name} split is too small: {len(data)} tokens, need at least {required}"
         )
 
 
@@ -275,6 +362,7 @@ def build_config_from_args(args: argparse.Namespace) -> DataConfig:
     return DataConfig(
         data_dir=args.data_dir,
         manifest_path=args.manifest_path,
+        tokenizer_type=args.tokenizer_type,
         train_split=args.train_split,
         context_length=args.context_length,
         batch_size=args.batch_size,
@@ -285,22 +373,25 @@ def build_config_from_args(args: argparse.Namespace) -> DataConfig:
 
 def preview_tensor(tensor: torch.Tensor, length: int = 24) -> str:
     values = tensor[0, :length].tolist()
-    return " ".join(f"{value:03d}" for value in values)
+    return " ".join(str(value) for value in values)
 
 
 def main() -> int:
     args = parse_args()
     config = build_config_from_args(args)
-    dataset = ByteDataset(config)
+    dataset = TokenDataset(config)
     train_x, train_y = dataset.get_batch("train")
     valid_x, valid_y = dataset.get_batch("valid")
+    preview_text = dataset.decode_tokens(train_x[0, : min(32, train_x.size(1))].tolist())
 
     print(f"loaded_works={len(dataset.works)}")
+    print(f"tokenizer_type={dataset.tokenizer.tokenizer_type}")
+    print(f"vocab_size={dataset.vocab_size}")
     print(
-        f"train works={dataset.train_summary().work_count} bytes={dataset.train_summary().byte_count}"
+        f"train works={dataset.train_summary().work_count} tokens={dataset.train_summary().token_count}"
     )
     print(
-        f"valid works={dataset.valid_summary().work_count} bytes={dataset.valid_summary().byte_count}"
+        f"valid works={dataset.valid_summary().work_count} tokens={dataset.valid_summary().token_count}"
     )
     print(f"train_batch_x_shape={tuple(train_x.shape)}")
     print(f"train_batch_y_shape={tuple(train_y.shape)}")
@@ -308,6 +399,7 @@ def main() -> int:
     print(f"valid_batch_y_shape={tuple(valid_y.shape)}")
     print(f"train_batch_x_preview={preview_tensor(train_x)}")
     print(f"train_batch_y_preview={preview_tensor(train_y)}")
+    print(f"train_batch_text_preview={preview_text}")
     print(f"first_train_title={dataset.train_works[0].title}")
     print(f"first_valid_title={dataset.valid_works[0].title}")
     return 0

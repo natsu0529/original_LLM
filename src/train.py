@@ -10,7 +10,7 @@ from typing import Any
 import torch
 
 from config import DataConfig, ModelConfig, RunConfig
-from data import ByteDataset
+from data import TokenDataset, Tokenizer
 from model import DecoderOnlyTransformer, count_parameters
 
 
@@ -23,13 +23,18 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--data-dir", type=Path, default=DataConfig().data_dir)
     parser.add_argument("--manifest-path", type=Path, default=DataConfig().manifest_path)
+    parser.add_argument(
+        "--tokenizer-type",
+        choices=["char", "byte"],
+        default=DataConfig().tokenizer_type,
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--train-split", type=float, default=DataConfig().train_split)
     parser.add_argument("--context-length", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
 
-    parser.add_argument("--vocab-size", type=int, default=256)
+    parser.add_argument("--vocab-size", type=int, default=None)
     parser.add_argument("--n-layer", type=int, default=4)
     parser.add_argument("--d-model", type=int, default=256)
     parser.add_argument("--n-head", type=int, default=4)
@@ -83,6 +88,7 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
     return DataConfig(
         data_dir=args.data_dir,
         manifest_path=args.manifest_path,
+        tokenizer_type=args.tokenizer_type,
         train_split=args.train_split,
         context_length=args.context_length,
         batch_size=args.batch_size,
@@ -91,9 +97,13 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
     )
 
 
-def build_model_config(args: argparse.Namespace) -> ModelConfig:
+def build_model_config(args: argparse.Namespace, dataset_vocab_size: int) -> ModelConfig:
+    if args.vocab_size is not None and args.vocab_size != dataset_vocab_size:
+        raise ValueError(
+            f"vocab_size mismatch: args={args.vocab_size}, dataset={dataset_vocab_size}"
+        )
     return ModelConfig(
-        vocab_size=args.vocab_size,
+        vocab_size=dataset_vocab_size,
         n_layer=args.n_layer,
         d_model=args.d_model,
         n_head=args.n_head,
@@ -147,6 +157,7 @@ def optimizer_to_device(optimizer: torch.optim.Optimizer, device: torch.device) 
 def checkpoint_payload(
     model: DecoderOnlyTransformer,
     optimizer: torch.optim.Optimizer,
+    tokenizer: Tokenizer,
     step: int,
     best_val_loss: float | None,
     run_config: RunConfig,
@@ -161,6 +172,7 @@ def checkpoint_payload(
         "data_config": {key: str(value) if isinstance(value, Path) else value for key, value in asdict(data_config).items()},
         "model_config": asdict(model_config),
         "args": serialize_args(args),
+        "tokenizer_state": tokenizer.state_dict(),
         "model_state": to_cpu_tree(model.state_dict()),
         "optimizer_state": to_cpu_tree(optimizer.state_dict()),
     }
@@ -169,6 +181,7 @@ def checkpoint_payload(
 def save_checkpoint(
     model: DecoderOnlyTransformer,
     optimizer: torch.optim.Optimizer,
+    tokenizer: Tokenizer,
     step: int,
     best_val_loss: float | None,
     run_config: RunConfig,
@@ -180,6 +193,7 @@ def save_checkpoint(
     payload = checkpoint_payload(
         model=model,
         optimizer=optimizer,
+        tokenizer=tokenizer,
         step=step,
         best_val_loss=best_val_loss,
         run_config=run_config,
@@ -198,6 +212,7 @@ def save_checkpoint(
 def save_best_checkpoint(
     model: DecoderOnlyTransformer,
     optimizer: torch.optim.Optimizer,
+    tokenizer: Tokenizer,
     step: int,
     best_val_loss: float,
     run_config: RunConfig,
@@ -209,6 +224,7 @@ def save_best_checkpoint(
     payload = checkpoint_payload(
         model=model,
         optimizer=optimizer,
+        tokenizer=tokenizer,
         step=step,
         best_val_loss=best_val_loss,
         run_config=run_config,
@@ -239,7 +255,7 @@ def load_checkpoint(
 @torch.no_grad()
 def estimate_loss(
     model: DecoderOnlyTransformer,
-    dataset: ByteDataset,
+    dataset: TokenDataset,
     device: torch.device,
     eval_iters: int,
 ) -> dict[str, float]:
@@ -262,6 +278,7 @@ def estimate_loss(
 @torch.no_grad()
 def generate_sample(
     model: DecoderOnlyTransformer,
+    tokenizer: Tokenizer,
     prompt: str,
     max_new_tokens: int,
     temperature: float,
@@ -269,9 +286,11 @@ def generate_sample(
     device: torch.device,
 ) -> str:
     model.eval()
-    tokens = list(prompt.encode("utf-8"))
+    tokens = tokenizer.encode(prompt)
     if not tokens:
-        tokens = [ord(" ")]
+        tokens = tokenizer.encode(" ")
+    if not tokens:
+        raise ValueError("Tokenizer failed to encode fallback prompt")
 
     idx = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
 
@@ -296,7 +315,7 @@ def generate_sample(
             next_token = torch.multinomial(probs, num_samples=1)
         idx = torch.cat((idx, next_token), dim=1)
 
-    generated = bytes(idx[0].tolist()).decode("utf-8", errors="ignore")
+    generated = tokenizer.decode(idx[0].tolist())
     model.train()
     return generated
 
@@ -330,9 +349,9 @@ def main() -> int:
 
     run_config = RunConfig(run_name=args.run_name, output_root=args.out_dir)
     data_config = build_data_config(args)
-    model_config = build_model_config(args)
 
-    dataset = ByteDataset(data_config)
+    dataset = TokenDataset(data_config)
+    model_config = build_model_config(args, dataset.vocab_size)
     model = DecoderOnlyTransformer(model_config).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -344,11 +363,14 @@ def main() -> int:
         "run_name": run_config.run_name,
         "device": str(device),
         "parameter_count": count_parameters(model),
+        "tokenizer_type": dataset.tokenizer.tokenizer_type,
+        "vocab_size": dataset.vocab_size,
         "data_config": {key: str(value) if isinstance(value, Path) else value for key, value in asdict(data_config).items()},
         "model_config": asdict(model_config),
         "args": serialize_args(args),
     }
     write_json(run_config.log_dir / "run_config.json", run_meta)
+    write_json(run_config.log_dir / "tokenizer.json", dataset.tokenizer.state_dict())
 
     start_step = 1
     best_val_loss: float | None = None
@@ -360,11 +382,13 @@ def main() -> int:
     print(f"run_name={run_config.run_name}")
     print(f"device={device}")
     print(f"parameter_count={count_parameters(model)}")
+    print(f"tokenizer_type={dataset.tokenizer.tokenizer_type}")
+    print(f"vocab_size={dataset.vocab_size}")
     print(
-        f"train works={dataset.train_summary().work_count} bytes={dataset.train_summary().byte_count}"
+        f"train works={dataset.train_summary().work_count} tokens={dataset.train_summary().token_count}"
     )
     print(
-        f"valid works={dataset.valid_summary().work_count} bytes={dataset.valid_summary().byte_count}"
+        f"valid works={dataset.valid_summary().work_count} tokens={dataset.valid_summary().token_count}"
     )
     print(f"checkpoints={run_config.checkpoint_dir}")
 
@@ -411,6 +435,7 @@ def main() -> int:
                 best_path = save_best_checkpoint(
                     model=model,
                     optimizer=optimizer,
+                    tokenizer=dataset.tokenizer,
                     step=step,
                     best_val_loss=best_val_loss,
                     run_config=run_config,
@@ -423,6 +448,7 @@ def main() -> int:
         if step == start_step or step % args.sample_every == 0 or step == args.max_steps:
             sample_text = generate_sample(
                 model=model,
+                tokenizer=dataset.tokenizer,
                 prompt=args.prompt,
                 max_new_tokens=args.sample_tokens,
                 temperature=args.temperature,
@@ -437,6 +463,7 @@ def main() -> int:
             latest_path, step_path = save_checkpoint(
                 model=model,
                 optimizer=optimizer,
+                tokenizer=dataset.tokenizer,
                 step=step,
                 best_val_loss=best_val_loss,
                 run_config=run_config,

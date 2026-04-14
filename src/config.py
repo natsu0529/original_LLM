@@ -11,12 +11,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class DataConfig:
     data_dir: Path = REPO_ROOT / "data" / "raw" / "aozora" / "dazai" / "txt"
     manifest_path: Path = REPO_ROOT / "data" / "raw" / "aozora" / "dazai" / "manifest.jsonl"
+    tokenizer_type: str = "char"
     train_split: float = 0.9
     context_length: int = 256
     batch_size: int = 8
     seed: int = 42
     limit: int | None = None
-    min_bytes_per_split: int = 257
+    min_tokens_per_split: int = 257
 
 
 @dataclass(slots=True)
