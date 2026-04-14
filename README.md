@@ -80,6 +80,9 @@ original_LLM/
   README.md
   claude.md
   agent.md
+  data_policy.md
+  scripts/
+    download_aozora_dazai.py
   src/
     config.py
     data.py
@@ -100,6 +103,7 @@ original_LLM/
 - 学習用テキストを1ファイル読み込める
 - byte列に変換できる
 - ミニバッチを作れる
+- 青空文庫の太宰作品を取得できる
 
 ### Milestone 2
 
@@ -127,6 +131,30 @@ original_LLM/
 - 1ファイル過学習を最初の成功条件にする
 - 依存関係は増やしすぎない
 
+## Data Acquisition
+
+学習データは当面、青空文庫の太宰治作品を使います。
+
+取得スクリプト:
+
+```bash
+python3 scripts/download_aozora_dazai.py --limit 5
+```
+
+全件取得:
+
+```bash
+python3 scripts/download_aozora_dazai.py
+```
+
+出力先:
+
+- `data/raw/aozora/dazai/zips/`
+- `data/raw/aozora/dazai/txt/`
+- `data/raw/aozora/dazai/manifest.jsonl`
+
+最初の実験では `--limit` 付きで数作品だけ取得し、導線が固まったら全件に切り替える。
+
 ## Status
 
-初期設計段階。これから最小実装に入る。
+データ収集導線の実装を開始。

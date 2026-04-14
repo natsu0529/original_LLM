@@ -86,8 +86,12 @@ validation は本文断片ではなく、できるだけ作品単位で分ける
 
 ## Next Step
 
+現在の収集スクリプト:
+
+- `scripts/download_aozora_dazai.py`
+
 次に作るもの:
 
-1. `scripts/download_aozora_dazai.py`
-2. `src/data.py`
-3. 小規模 subset で回すための `--limit` 付き学習導線
+1. `src/data.py`
+2. 小規模 subset で回すための `--limit` 付き学習導線
+3. Aozoraテキストの最小クリーニング
