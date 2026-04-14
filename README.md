@@ -94,6 +94,7 @@ original_LLM/
   data/
     raw/
   checkpoints/
+  logs/
   samples/
 ```
 
@@ -117,6 +118,7 @@ original_LLM/
 - checkpoint save/load
 - 推論スクリプト
 - temperature / top-k sampling
+- `train.py` で `run_name` ごとの checkpoint / sample / log を分離
 
 ### Milestone 4
 
@@ -192,6 +194,17 @@ uv run python src/train.py --run-name dazai-b --limit 32
 
 M4 Mac mini 32GB では、重い MPS 学習を同時に複数本走らせると競合しやすい。
 そのため、実運用では「重い本学習を1本 + 軽い検証を1本」程度から始める。
+
+現在の `train.py` は以下を持つ。
+
+- `--run-name`
+- `--resume`
+- `--save-every`
+- `--sample-every`
+- `--eval-every`
+- `checkpoints/<run_name>/`
+- `samples/<run_name>/`
+- `logs/<run_name>/`
 
 ## Data Acquisition
 
