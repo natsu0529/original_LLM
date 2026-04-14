@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--carry-context", action="store_true")
+    parser.add_argument("--user-label", type=str, default=None)
+    parser.add_argument("--reply-label", type=str, default=None)
     parser.add_argument("--show-meta", action="store_true")
     return parser.parse_args()
 
@@ -116,6 +118,8 @@ def validate_args(args: argparse.Namespace) -> None:
             "min_new_chars_before_stop must be non-negative, "
             f"got {args.min_new_chars_before_stop}"
         )
+    if (args.user_label is None) != (args.reply_label is None):
+        raise ValueError("user_label and reply_label must be provided together")
 
 
 def trim_text_to_context(
@@ -167,6 +171,40 @@ def should_stop_early(
 def print_block(label: str, text: str) -> None:
     print(f"[{label}]")
     print(text.rstrip() or "(empty)")
+
+
+def role_prefix(label: str) -> str:
+    return f"{label}:"
+
+
+def role_prompt(label: str) -> str:
+    return f"{label}: "
+
+
+def build_interactive_prompt(
+    user_input: str,
+    history: str,
+    args: argparse.Namespace,
+    tokenizer: Tokenizer,
+    context_length: int,
+) -> str:
+    if args.user_label is None or args.reply_label is None:
+        prompt = user_input
+        if args.carry_context and history:
+            prompt = f"{history}\n{user_input}"
+        return trim_text_to_context(prompt, tokenizer, context_length)
+
+    turn_prompt = (
+        f"{role_prompt(args.user_label)}{user_input}\n"
+        f"{role_prompt(args.reply_label)}"
+    )
+    if args.carry_context and history:
+        return trim_text_to_context(
+            f"{history}\n{turn_prompt}",
+            tokenizer,
+            context_length,
+        )
+    return trim_text_to_context(turn_prompt, tokenizer, context_length)
 
 
 @torch.no_grad()
@@ -269,6 +307,8 @@ def interactive_loop(
     print(":help でヘルプ")
     if args.carry_context:
         print("carry-context: on")
+    if args.user_label is not None and args.reply_label is not None:
+        print(f"chat-format: {args.user_label}/{args.reply_label}")
 
     history = ""
     while True:
@@ -295,15 +335,17 @@ def interactive_loop(
             print(":reset -> clear history")
             print(":quit  -> exit")
             print(f"carry-context -> {'on' if args.carry_context else 'off'}")
+            if args.user_label is not None and args.reply_label is not None:
+                print(f"labels -> {args.user_label}/{args.reply_label}")
             continue
 
-        prompt = user_input
-        if args.carry_context and history:
-            prompt = trim_text_to_context(
-                f"{history}\n{user_input}",
-                tokenizer,
-                model.config.context_length,
-            )
+        prompt = build_interactive_prompt(
+            user_input=user_input,
+            history=history,
+            args=args,
+            tokenizer=tokenizer,
+            context_length=model.config.context_length,
+        )
 
         generated = generate_text(
             model=model,

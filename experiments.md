@@ -96,3 +96,14 @@
 - last: `step=14701`, `valid_loss=4.241915`
 - notes: 旧 `dazai-chat-simple` は `ユーザー/アシスタント` 形式でズレていたため、新ラベル版を別 run で切り直した。過学習を抑えるため step は短め、learning rate も `5e-5`
 - next: `best.pt` で `私: こんにちは\n相手:` の返答を見て、口調の向きが合うか確認する
+
+## 2026-04-14 dazai-friend-reply
+
+- status: running
+- purpose: `私:` / `相手:` 形式のまま、`相手:` 側の返答 token にだけ loss を掛ける
+- command: `uv run python src/train.py --run-name dazai-friend-reply --resume checkpoints/dazai-char-384x6/best.pt --reset-optimizer --reset-best-val-loss --data-dir data/chat_seed_simple --manifest-path data/chat_seed_simple/manifest.jsonl --tokenizer-type char --reply-loss-label 相手 --device mps --context-length 256 --batch-size 6 --n-layer 6 --d-model 384 --n-head 6 --ffn-hidden 1536 --dropout 0.1 --learning-rate 5e-5 --max-steps 15000 ...`
+- config: `tokenizer=char`, `base_checkpoint=dazai-char-384x6/best.pt`, `role_format=私/相手`, `reply_only_loss=相手`, `n_layer=6`, `d_model=384`, `n_head=6`, `ffn_hidden=1536`, `batch_size=6`
+- best: `step=14701`, `valid_loss=2.988419` から開始
+- last: `step=14701`, `valid_loss=2.988419`
+- notes: continuation 的に `私:` 側まで再現してしまう問題を減らすため、返答側だけ loss 対象にした
+- next: `best.pt` を単発生成と interactive で見て、返答性が上がるか確認する

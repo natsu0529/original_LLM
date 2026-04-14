@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
         choices=["char", "byte"],
         default=DataConfig().tokenizer_type,
     )
+    parser.add_argument("--reply-loss-label", type=str, default=DataConfig().reply_loss_label)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--train-split", type=float, default=DataConfig().train_split)
     parser.add_argument("--context-length", type=int, default=256)
@@ -91,6 +92,7 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
         data_dir=args.data_dir,
         manifest_path=args.manifest_path,
         tokenizer_type=args.tokenizer_type,
+        reply_loss_label=args.reply_loss_label,
         train_split=args.train_split,
         context_length=args.context_length,
         batch_size=args.batch_size,

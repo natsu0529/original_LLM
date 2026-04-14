@@ -233,6 +233,16 @@ uv run python src/generate.py --checkpoint checkpoints/dazai-long/best.pt --prom
 uv run python src/generate.py --checkpoint checkpoints/dazai-long/best.pt --interactive
 ```
 
+`私:` / `相手:` 形式の会話モデルを対話モードで使う例:
+
+```bash
+uv run python src/generate.py \
+  --checkpoint checkpoints/dazai-friend-simple/best.pt \
+  --interactive \
+  --user-label 私 \
+  --reply-label 相手
+```
+
 疑似的に文脈を持たせたい場合:
 
 ```bash

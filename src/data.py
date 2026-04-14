@@ -21,6 +21,8 @@ AOZORA_NOTE_RE = re.compile(r"［＃.*?］")
 RUBY_RE = re.compile(r"《.*?》")
 RUBY_PIPE_RE = re.compile(r"｜")
 MULTI_BLANK_RE = re.compile(r"\n{3,}")
+ROLE_LINE_RE = re.compile(r"^[^:\n]{1,32}:")
+IGNORE_INDEX = -100
 
 
 @dataclass(slots=True)
@@ -134,8 +136,26 @@ class TokenDataset:
         )
         self.vocab_size = self.tokenizer.vocab_size
         self.train_works, self.valid_works = split_works(self.works, config.train_split)
-        self.train_data = encode_works(self.train_works, self.tokenizer)
-        self.valid_data = encode_works(self.valid_works, self.tokenizer)
+        self.train_data, self.train_loss_mask = encode_works(
+            self.train_works,
+            self.tokenizer,
+            reply_loss_label=config.reply_loss_label,
+        )
+        self.valid_data, self.valid_loss_mask = encode_works(
+            self.valid_works,
+            self.tokenizer,
+            reply_loss_label=config.reply_loss_label,
+        )
+        self.train_valid_starts = compute_valid_starts(
+            self.train_data,
+            self.train_loss_mask,
+            config.context_length,
+        )
+        self.valid_valid_starts = compute_valid_starts(
+            self.valid_data,
+            self.valid_loss_mask,
+            config.context_length,
+        )
         ensure_split_size(
             "train",
             self.train_data,
@@ -158,24 +178,45 @@ class TokenDataset:
     def get_batch(self, split: str) -> tuple[torch.Tensor, torch.Tensor]:
         if split == "train":
             data = self.train_data
+            loss_mask = self.train_loss_mask
+            valid_starts = self.train_valid_starts
         elif split == "valid":
             data = self.valid_data
+            loss_mask = self.valid_loss_mask
+            valid_starts = self.valid_valid_starts
         else:
             raise ValueError(f"Unknown split: {split}")
 
-        max_start = len(data) - self.config.context_length - 1
-        starts = torch.randint(
-            low=0,
-            high=max_start + 1,
-            size=(self.config.batch_size,),
-            generator=self.generator,
-        )
+        if valid_starts is None:
+            max_start = len(data) - self.config.context_length - 1
+            starts = torch.randint(
+                low=0,
+                high=max_start + 1,
+                size=(self.config.batch_size,),
+                generator=self.generator,
+            )
+        else:
+            start_positions = torch.randint(
+                low=0,
+                high=valid_starts.numel(),
+                size=(self.config.batch_size,),
+                generator=self.generator,
+            )
+            starts = valid_starts[start_positions]
         x = torch.stack(
             [data[start : start + self.config.context_length] for start in starts]
         )
         y = torch.stack(
             [data[start + 1 : start + self.config.context_length + 1] for start in starts]
         )
+        if loss_mask is not None:
+            y_loss_mask = torch.stack(
+                [
+                    loss_mask[start + 1 : start + self.config.context_length + 1]
+                    for start in starts
+                ]
+            )
+            y = y.masked_fill(~y_loss_mask, IGNORE_INDEX)
         return x, y
 
     def encode_text(self, text: str) -> list[int]:
@@ -226,6 +267,12 @@ def parse_args() -> argparse.Namespace:
         choices=["char", "byte"],
         default=DataConfig().tokenizer_type,
         help="Tokenization mode used for training.",
+    )
+    parser.add_argument(
+        "--reply-loss-label",
+        type=str,
+        default=DataConfig().reply_loss_label,
+        help="Only tokens in lines starting with this label contribute to loss.",
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--train-split", type=float, default=DataConfig().train_split)
@@ -335,11 +382,97 @@ def shuffle_works(works: list[WorkText], seed: int) -> list[WorkText]:
     return shuffled
 
 
-def encode_works(works: list[WorkText], tokenizer: Tokenizer) -> torch.Tensor:
+def encode_works(
+    works: list[WorkText],
+    tokenizer: Tokenizer,
+    reply_loss_label: str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     separator = "\n\n"
-    merged_text = separator.join(work.cleaned_text for work in works)
-    token_ids = tokenizer.encode(merged_text)
-    return torch.tensor(token_ids, dtype=torch.long)
+    merged_token_ids: list[int] = []
+    merged_loss_mask: list[bool] = []
+    for index, work in enumerate(works):
+        token_ids = tokenizer.encode(work.cleaned_text)
+        merged_token_ids.extend(token_ids)
+        if reply_loss_label is not None:
+            merged_loss_mask.extend(
+                build_reply_loss_mask(
+                    work.cleaned_text,
+                    tokenizer,
+                    reply_loss_label,
+                )
+            )
+        if index != len(works) - 1:
+            separator_ids = tokenizer.encode(separator)
+            merged_token_ids.extend(separator_ids)
+            if reply_loss_label is not None:
+                merged_loss_mask.extend([False] * len(separator_ids))
+
+    data = torch.tensor(merged_token_ids, dtype=torch.long)
+    if reply_loss_label is None:
+        return data, None
+    return data, torch.tensor(merged_loss_mask, dtype=torch.bool)
+
+
+def build_reply_loss_mask(
+    text: str,
+    tokenizer: Tokenizer,
+    reply_loss_label: str,
+) -> list[bool]:
+    reply_prefix = f"{reply_loss_label}:"
+    token_ids = tokenizer.encode(text)
+    mask: list[bool] = []
+    reply_active = False
+
+    for line in text.splitlines(keepends=True):
+        newline_count = len(line) - len(line.rstrip("\n"))
+        line_body = line[:-newline_count] if newline_count > 0 else line
+
+        if line_body.startswith(reply_prefix):
+            prefix_text = reply_prefix
+            remainder = line_body[len(reply_prefix) :]
+            if remainder.startswith(" "):
+                prefix_text += " "
+                remainder = remainder[1:]
+            mask.extend([False] * len(tokenizer.encode(prefix_text)))
+            mask.extend([True] * len(tokenizer.encode(remainder)))
+            if newline_count > 0:
+                mask.extend([True] * len(tokenizer.encode("\n" * newline_count)))
+            reply_active = True
+            continue
+
+        if line_body and ROLE_LINE_RE.match(line_body):
+            mask.extend([False] * len(tokenizer.encode(line)))
+            reply_active = False
+            continue
+
+        mask.extend([reply_active] * len(tokenizer.encode(line)))
+
+    if len(mask) != len(token_ids):
+        raise ValueError(
+            "Reply loss mask length mismatch: "
+            f"tokens={len(token_ids)} mask={len(mask)}"
+        )
+    return mask
+
+
+def compute_valid_starts(
+    data: torch.Tensor,
+    loss_mask: torch.Tensor | None,
+    context_length: int,
+) -> torch.Tensor | None:
+    if loss_mask is None:
+        return None
+
+    max_start = len(data) - context_length - 1
+    if max_start < 0:
+        return None
+
+    target_mask = loss_mask[1:]
+    window_sums = target_mask.unfold(0, context_length, 1).sum(dim=1)
+    valid_starts = torch.nonzero(window_sums > 0, as_tuple=False).flatten()
+    if valid_starts.numel() == 0:
+        raise ValueError("No valid batch windows contain reply-loss tokens")
+    return valid_starts
 
 
 def summarize(works: list[WorkText], tokenizer: Tokenizer) -> SplitSummary:
@@ -367,6 +500,7 @@ def build_config_from_args(args: argparse.Namespace) -> DataConfig:
         data_dir=args.data_dir,
         manifest_path=args.manifest_path,
         tokenizer_type=args.tokenizer_type,
+        reply_loss_label=args.reply_loss_label,
         train_split=args.train_split,
         context_length=args.context_length,
         batch_size=args.batch_size,
@@ -391,6 +525,7 @@ def main() -> int:
     print(f"loaded_works={len(dataset.works)}")
     print(f"tokenizer_type={dataset.tokenizer.tokenizer_type}")
     print(f"vocab_size={dataset.vocab_size}")
+    print(f"reply_loss_label={config.reply_loss_label}")
     print(
         f"train works={dataset.train_summary().work_count} tokens={dataset.train_summary().token_count}"
     )

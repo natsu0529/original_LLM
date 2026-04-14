@@ -9,6 +9,8 @@ import torch.nn.functional as F
 
 from config import ModelConfig
 
+IGNORE_INDEX = -100
+
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
@@ -140,6 +142,7 @@ class DecoderOnlyTransformer(nn.Module):
             loss = F.cross_entropy(
                 logits.reshape(batch_size * seq_len, self.config.vocab_size),
                 targets.reshape(batch_size * seq_len),
+                ignore_index=IGNORE_INDEX,
             )
         return logits, loss
 

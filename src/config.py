@@ -12,6 +12,7 @@ class DataConfig:
     data_dir: Path = REPO_ROOT / "data" / "raw" / "aozora" / "dazai" / "txt"
     manifest_path: Path = REPO_ROOT / "data" / "raw" / "aozora" / "dazai" / "manifest.jsonl"
     tokenizer_type: str = "char"
+    reply_loss_label: str | None = None
     train_split: float = 0.9
     context_length: int = 256
     batch_size: int = 8
