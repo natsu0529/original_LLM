@@ -44,6 +44,18 @@ def parse_args() -> argparse.Namespace:
         help="Also export single replies into separate txt files.",
     )
     parser.add_argument(
+        "--max-user-chars",
+        type=int,
+        default=None,
+        help="Skip pair rows whose user_text exceeds this character length.",
+    )
+    parser.add_argument(
+        "--max-reply-chars",
+        type=int,
+        default=None,
+        help="Skip pair/single rows whose reply_text exceeds this character length.",
+    )
+    parser.add_argument(
         "--clean",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -70,6 +82,10 @@ def main() -> int:
     args = parse_args()
     if not args.input_dir.exists():
         raise FileNotFoundError(f"Input dir not found: {args.input_dir}")
+    if args.max_user_chars is not None and args.max_user_chars <= 0:
+        raise ValueError(f"max_user_chars must be positive, got {args.max_user_chars}")
+    if args.max_reply_chars is not None and args.max_reply_chars <= 0:
+        raise ValueError(f"max_reply_chars must be positive, got {args.max_reply_chars}")
 
     files = sorted(args.input_dir.glob("dialogue_batch_*.labeled.jsonl"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -81,6 +97,8 @@ def main() -> int:
     manifest_rows: list[dict] = []
     pair_export_count = 0
     single_export_count = 0
+    skipped_long_pair_count = 0
+    skipped_long_single_count = 0
     current_work_id = args.work_id_start
 
     for path in files:
@@ -97,11 +115,26 @@ def main() -> int:
 
             if label == "pair":
                 formatted_text = row.get("formatted_text")
+                user_text = row.get("user_text")
+                reply_text = row.get("reply_text")
+                if args.max_user_chars is not None and isinstance(user_text, str):
+                    if len(user_text.strip()) > args.max_user_chars:
+                        skipped_long_pair_count += 1
+                        continue
+                if args.max_reply_chars is not None and isinstance(reply_text, str):
+                    if len(reply_text.strip()) > args.max_reply_chars:
+                        skipped_long_pair_count += 1
+                        continue
                 if isinstance(formatted_text, str) and formatted_text.strip():
                     pair_blocks.append(formatted_text.strip())
                     pair_export_count += 1
             elif args.include_single and label == "single":
                 formatted_text = row.get("formatted_text")
+                reply_text = row.get("reply_text")
+                if args.max_reply_chars is not None and isinstance(reply_text, str):
+                    if len(reply_text.strip()) > args.max_reply_chars:
+                        skipped_long_single_count += 1
+                        continue
                 if isinstance(formatted_text, str) and formatted_text.strip():
                     single_blocks.append(formatted_text.strip())
                     single_export_count += 1
@@ -153,6 +186,10 @@ def main() -> int:
         "manifest_count": len(manifest_rows),
         "pair_export_count": pair_export_count,
         "single_export_count": single_export_count,
+        "skipped_long_pair_count": skipped_long_pair_count,
+        "skipped_long_single_count": skipped_long_single_count,
+        "max_user_chars": args.max_user_chars,
+        "max_reply_chars": args.max_reply_chars,
     }
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
@@ -163,6 +200,8 @@ def main() -> int:
     print(f"manifest_count={len(manifest_rows)}")
     print(f"pair_export_count={pair_export_count}")
     print(f"single_export_count={single_export_count}")
+    print(f"skipped_long_pair_count={skipped_long_pair_count}")
+    print(f"skipped_long_single_count={skipped_long_single_count}")
     print(f"output_dir={args.output_dir}")
     return 0
 
