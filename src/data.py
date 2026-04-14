@@ -114,7 +114,11 @@ Tokenizer = ByteTokenizer | CharTokenizer
 
 
 class TokenDataset:
-    def __init__(self, config: DataConfig) -> None:
+    def __init__(
+        self,
+        config: DataConfig,
+        tokenizer: Tokenizer | None = None,
+    ) -> None:
         self.config = config
         self.generator = torch.Generator().manual_seed(config.seed)
         self._manifest_by_id = load_manifest(config.manifest_path)
@@ -124,7 +128,7 @@ class TokenDataset:
             limit=config.limit,
         )
         self.works = shuffle_works(loaded_works, config.seed)
-        self.tokenizer = build_tokenizer(
+        self.tokenizer = tokenizer or build_tokenizer(
             tokenizer_type=config.tokenizer_type,
             texts=[work.cleaned_text for work in self.works],
         )

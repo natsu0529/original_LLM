@@ -66,11 +66,11 @@
 
 ## 2026-04-14 dazai-char-384x6
 
-- status: running
+- status: done (`latest.pt` から `15000` まで低LR延長まで完了)
 - purpose: char-level の良さを維持したまま、モデル容量を一段増やす
-- command: `uv run python src/train.py --run-name dazai-char-384x6 --tokenizer-type char --device mps --context-length 256 --batch-size 6 --n-layer 6 --d-model 384 --n-head 6 --ffn-hidden 1536 --dropout 0.1 --max-steps 10000 ...`
+- command: `uv run python src/train.py --run-name dazai-char-384x6 --tokenizer-type char --device mps --context-length 256 --batch-size 6 --n-layer 6 --d-model 384 --n-head 6 --ffn-hidden 1536 --dropout 0.1 --max-steps 10000 ...` -> その後 `--resume checkpoints/dazai-char-384x6/latest.pt --learning-rate 1e-4 --max-steps 15000`
 - config: `tokenizer=char`, `vocab_size=4265`, `n_layer=6`, `d_model=384`, `n_head=6`, `ffn_hidden=1536`, `context_length=256`, `batch_size=6`, `params=12,383,616`
-- best: `step=6600`, `valid_loss=2.842542` まで確認
-- last: `step=6800`, `valid_loss=2.889892` まで確認
-- notes: 進行中。初期の速度感は問題なし。char 256x4 より表現力の余地を見たい run
-- next: 完走後に `checkpoints/dazai-char-384x6/best.pt` で生成比較する
+- best: `step=14700`, `valid_loss=2.665377`
+- last: `step=15000`, `valid_loss=2.702346`
+- notes: `10000 -> 15000` の低LR延長でさらに改善した。`step=14700` で best 更新。ただし `15000` の最後は best ではなく、前に決めた基準ならここで一旦止めるのが妥当
+- next: `checkpoints/dazai-char-384x6/best.pt` を使って生成比較し、必要なら次は会話データ追加か 512x8 を検討する

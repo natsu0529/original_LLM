@@ -10,7 +10,7 @@ from typing import Any
 import torch
 
 from config import DataConfig, ModelConfig, RunConfig
-from data import TokenDataset, Tokenizer
+from data import TokenDataset, Tokenizer, tokenizer_from_state_dict
 from model import DecoderOnlyTransformer, count_parameters
 
 
@@ -111,6 +111,14 @@ def build_model_config(args: argparse.Namespace, dataset_vocab_size: int) -> Mod
         context_length=args.context_length,
         dropout=args.dropout,
     )
+
+
+def load_checkpoint_metadata(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+    return torch.load(path, map_location="cpu")
 
 
 def serialize_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -348,10 +356,26 @@ def main() -> int:
         torch.set_float32_matmul_precision("high")
 
     run_config = RunConfig(run_name=args.run_name, output_root=args.out_dir)
+    resume_checkpoint = load_checkpoint_metadata(args.resume)
     data_config = build_data_config(args)
+    resume_tokenizer = (
+        tokenizer_from_state_dict(resume_checkpoint.get("tokenizer_state"))
+        if resume_checkpoint is not None
+        else None
+    )
+    if resume_tokenizer is not None:
+        data_config.tokenizer_type = resume_tokenizer.tokenizer_type
 
-    dataset = TokenDataset(data_config)
-    model_config = build_model_config(args, dataset.vocab_size)
+    dataset = TokenDataset(data_config, tokenizer=resume_tokenizer)
+    if resume_checkpoint is not None:
+        model_config = ModelConfig(**resume_checkpoint["model_config"])
+        if model_config.vocab_size != dataset.vocab_size:
+            raise ValueError(
+                "resume checkpoint vocab_size does not match dataset tokenizer: "
+                f"checkpoint={model_config.vocab_size}, dataset={dataset.vocab_size}"
+            )
+    else:
+        model_config = build_model_config(args, dataset.vocab_size)
     model = DecoderOnlyTransformer(model_config).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),

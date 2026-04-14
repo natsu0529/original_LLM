@@ -242,7 +242,7 @@ uv run python src/generate.py --checkpoint checkpoints/dazai-long/best.pt --inte
 現在の `generate.py` は、デバッグ用途を優先して以下を既定で持つ。
 
 - `max_new_tokens=64`
-- `。` または空行での簡易 stop
+- `。`, `！`, `？`, `」` または空行での簡易 stop
 - interactive 時の `prompt` / `output` 表示
 - 必要なら `--repetition-penalty 1.1` のような軽い繰り返し抑制
 

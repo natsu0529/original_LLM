@@ -13,6 +13,7 @@ from model import DecoderOnlyTransformer, count_parameters
 DEFAULT_CHECKPOINT = REPO_ROOT / "checkpoints" / "dazai-long" / "best.pt"
 DEFAULT_MAX_NEW_TOKENS = 64
 DEFAULT_MIN_NEW_CHARS_BEFORE_STOP = 24
+DEFAULT_STOP_CHARS = ("。", "！", "？", "」")
 
 
 def parse_args() -> argparse.Namespace:
@@ -160,7 +161,7 @@ def should_stop_early(
     visible_text = generated_suffix_text.strip()
     if len(visible_text) < args.min_new_chars_before_stop:
         return False
-    return visible_text.endswith("。")
+    return visible_text.endswith(DEFAULT_STOP_CHARS)
 
 
 def print_block(label: str, text: str) -> None:
