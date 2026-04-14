@@ -286,6 +286,67 @@ uv run python scripts/download_aozora_dazai.py
 
 最初の実験では `--limit` 付きで数作品だけ取得し、導線が固まったら全件に切り替える。
 
+## Dialogue Candidate Extraction
+
+青空文庫の太宰テキストから、`「...」` に包まれた発話候補を JSONL に抜き出すスクリプトを用意している。
+
+これはそのまま学習に入れるためではなく、後段で AI エージェントに
+
+- 会話ペアかどうかの判定
+- 酒 / 文学 / 官能 / 日常などの分類
+- `私:` / `相手:` 形式への軽整形
+
+をさせるための中間データである。
+
+実行例:
+
+```bash
+uv run python scripts/extract_aozora_dialogue_candidates.py
+```
+
+まず一部だけ試す例:
+
+```bash
+uv run python scripts/extract_aozora_dialogue_candidates.py --limit 5
+```
+
+主な出力先:
+
+- `data/intermediate/aozora/dazai/dialogue_candidates.jsonl`
+- `data/intermediate/aozora/dazai/dialogue_summary.json`
+
+各候補には、作品ID、タイトル、発話本文、前後文脈、前後の鉤括弧発話、近接する発話クラスタIDを入れている。
+
+AI に渡しやすいように、高スコア候補だけを score 順でバッチ化する例:
+
+```bash
+uv run python scripts/prepare_dialogue_labeling_batches.py --min-heuristic-score 4 --batch-size 200
+```
+
+出力先:
+
+- `data/intermediate/aozora/dazai/dialogue_batches/`
+
+分類ルールは [dialogue_labeling.md](/Users/natsuhirosuzuki/original_LLM/dialogue_labeling.md) にまとめている。
+
+ラベル済み batch の検証:
+
+```bash
+uv run python scripts/validate_dialogue_labels.py
+```
+
+ラベル済み batch から自動 seed を書き出す例:
+
+```bash
+uv run python scripts/build_chat_seed_from_labels.py
+```
+
+first-pass の自動ラベルを作る例:
+
+```bash
+uv run python scripts/bootstrap_dialogue_labels.py --batches 0001 0002
+```
+
 ## Status
 
 データ収集導線の実装を開始。学習系の実装は `caffeinate + tmux + resume + run_name 分離` を前提に進める。
