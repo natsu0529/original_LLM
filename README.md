@@ -243,6 +243,23 @@ uv run python src/generate.py \
   --reply-label 相手
 ```
 
+開発者向けの会話 CLI 入口:
+
+```bash
+uv run dazai-chat
+```
+
+これは現在の会話向け checkpoint を自動で拾い、次を既定で有効にする。
+
+- `--interactive`
+- `--carry-context`
+- `--user-label 私`
+- `--reply-label 相手`
+- `--temperature 0.2`
+- `--top-k 8`
+- `--repetition-penalty 1.1`
+- `--max-new-tokens 48`
+
 疑似的に文脈を持たせたい場合:
 
 ```bash
