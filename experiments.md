@@ -74,3 +74,25 @@
 - last: `step=15000`, `valid_loss=2.702346`
 - notes: `10000 -> 15000` の低LR延長でさらに改善した。`step=14700` で best 更新。ただし `15000` の最後は best ではなく、前に決めた基準ならここで一旦止めるのが妥当
 - next: `checkpoints/dazai-char-384x6/best.pt` を使って生成比較し、必要なら次は会話データ追加か 512x8 を検討する
+
+## 2026-04-14 dazai-chat-simple
+
+- status: running
+- purpose: 太宰寄りのベースを残したまま、続きを書く癖から短い返答へ少し寄せる
+- command: `uv run python src/train.py --run-name dazai-chat-simple --resume checkpoints/dazai-char-384x6/best.pt --reset-optimizer --reset-best-val-loss --data-dir data/chat_seed_simple --manifest-path data/chat_seed_simple/manifest.jsonl --tokenizer-type char --device mps --context-length 256 --batch-size 6 --n-layer 6 --d-model 384 --n-head 6 --ffn-hidden 1536 --dropout 0.1 --learning-rate 1e-4 --max-steps 17700 ...`
+- config: `tokenizer=char`, `base_checkpoint=dazai-char-384x6/best.pt`, `n_layer=6`, `d_model=384`, `n_head=6`, `ffn_hidden=1536`, `context_length=256`, `batch_size=6`, `params=12,383,616`
+- best: `step=14701`, `valid_loss=3.825891` から開始
+- last: `step=14701`, `valid_loss=3.825891`
+- notes: base の optimizer state と best loss は引き継がず、会話 seed 用の run として切り分けた
+- next: まず `17000` 台まで回し、生成が返答に寄るか確認する
+
+## 2026-04-14 dazai-friend-simple
+
+- status: running
+- purpose: `アシスタント` ではなく、友達寄りの `私:` / `相手:` 会話へ寄せる
+- command: `uv run python src/train.py --run-name dazai-friend-simple --resume checkpoints/dazai-char-384x6/best.pt --reset-optimizer --reset-best-val-loss --data-dir data/chat_seed_simple --manifest-path data/chat_seed_simple/manifest.jsonl --tokenizer-type char --device mps --context-length 256 --batch-size 6 --n-layer 6 --d-model 384 --n-head 6 --ffn-hidden 1536 --dropout 0.1 --learning-rate 5e-5 --max-steps 15100 ...`
+- config: `tokenizer=char`, `base_checkpoint=dazai-char-384x6/best.pt`, `role_format=私/相手`, `n_layer=6`, `d_model=384`, `n_head=6`, `ffn_hidden=1536`, `batch_size=6`
+- best: `step=14701`, `valid_loss=4.241915` から開始
+- last: `step=14701`, `valid_loss=4.241915`
+- notes: 旧 `dazai-chat-simple` は `ユーザー/アシスタント` 形式でズレていたため、新ラベル版を別 run で切り直した。過学習を抑えるため step は短め、learning rate も `5e-5`
+- next: `best.pt` で `私: こんにちは\n相手:` の返答を見て、口調の向きが合うか確認する

@@ -20,6 +20,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", type=str, default="dazai-debug")
     parser.add_argument("--out-dir", type=Path, default=RunConfig().output_root)
     parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument("--reset-optimizer", action="store_true")
+    parser.add_argument("--reset-best-val-loss", action="store_true")
 
     parser.add_argument("--data-dir", type=Path, default=DataConfig().data_dir)
     parser.add_argument("--manifest-path", type=Path, default=DataConfig().manifest_path)
@@ -162,6 +164,16 @@ def optimizer_to_device(optimizer: torch.optim.Optimizer, device: torch.device) 
                 state[key] = value.to(device)
 
 
+def apply_optimizer_overrides(
+    optimizer: torch.optim.Optimizer,
+    learning_rate: float,
+    weight_decay: float,
+) -> None:
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = learning_rate
+        param_group["weight_decay"] = weight_decay
+
+
 def checkpoint_payload(
     model: DecoderOnlyTransformer,
     optimizer: torch.optim.Optimizer,
@@ -250,11 +262,13 @@ def load_checkpoint(
     model: DecoderOnlyTransformer,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    load_optimizer: bool = True,
 ) -> tuple[int, float | None]:
     checkpoint = torch.load(path, map_location="cpu")
     model.load_state_dict(checkpoint["model_state"])
-    optimizer.load_state_dict(checkpoint["optimizer_state"])
-    optimizer_to_device(optimizer, device)
+    if load_optimizer:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        optimizer_to_device(optimizer, device)
     step = int(checkpoint["step"])
     best_val_loss = checkpoint.get("best_val_loss")
     return step, best_val_loss
@@ -399,9 +413,26 @@ def main() -> int:
     start_step = 1
     best_val_loss: float | None = None
     if args.resume is not None:
-        resumed_step, best_val_loss = load_checkpoint(args.resume, model, optimizer, device)
+        resumed_step, best_val_loss = load_checkpoint(
+            args.resume,
+            model,
+            optimizer,
+            device,
+            load_optimizer=not args.reset_optimizer,
+        )
+        apply_optimizer_overrides(
+            optimizer,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+        )
+        if args.reset_best_val_loss:
+            best_val_loss = None
         start_step = resumed_step + 1
         print(f"resumed_from={args.resume} step={resumed_step}")
+        if args.reset_optimizer:
+            print("optimizer_state=reset")
+        if args.reset_best_val_loss:
+            print("best_val_loss=reset")
 
     print(f"run_name={run_config.run_name}")
     print(f"device={device}")
