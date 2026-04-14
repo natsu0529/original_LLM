@@ -80,6 +80,7 @@ original_LLM/
   README.md
   claude.md
   agent.md
+  experiments.md
   data_policy.md
   scripts/
     download_aozora_dazai.py
@@ -132,6 +133,17 @@ original_LLM/
 - 余計な抽象化は後回しにする
 - 1ファイル過学習を最初の成功条件にする
 - 依存関係は増やしすぎない
+
+## Experiment Log
+
+試した設定と結果は [experiments.md](/Users/natsuhirosuzuki/original_LLM/experiments.md) に残す。
+
+最低限、以下を記録する。
+
+- 何を変えたか
+- best / last の数値
+- 生成の使用感
+- 次に何を試すか
 
 ## Environment Setup
 
