@@ -5,12 +5,12 @@ from pathlib import Path
 
 import torch
 
-from config import REPO_ROOT, ModelConfig
-from data import Tokenizer, tokenizer_from_state_dict
-from model import DecoderOnlyTransformer, count_parameters
+from original_llm.config import ModelConfig
+from original_llm.data import Tokenizer, tokenizer_from_state_dict
+from original_llm.model import DecoderOnlyTransformer, count_parameters
 
 
-DEFAULT_CHECKPOINT = REPO_ROOT / "checkpoints" / "dazai-long" / "best.pt"
+DEFAULT_CHECKPOINT = Path("checkpoints") / "dazai-long" / "best.pt"
 DEFAULT_MAX_NEW_TOKENS = 64
 DEFAULT_MIN_NEW_CHARS_BEFORE_STOP = 24
 DEFAULT_STOP_CHARS = ("。", "！", "？", "」")

@@ -9,9 +9,9 @@ from typing import Any
 
 import torch
 
-from config import DataConfig, ModelConfig, RunConfig
-from data import TokenDataset, Tokenizer, tokenizer_from_state_dict
-from model import DecoderOnlyTransformer, count_parameters
+from original_llm.config import DataConfig, ModelConfig, RunConfig
+from original_llm.data import TokenDataset, Tokenizer, tokenizer_from_state_dict
+from original_llm.model import DecoderOnlyTransformer, count_parameters
 
 
 def parse_args() -> argparse.Namespace:

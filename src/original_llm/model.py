@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from config import ModelConfig
+from original_llm.config import ModelConfig
 
 IGNORE_INDEX = -100
 

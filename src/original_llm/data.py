@@ -9,7 +9,7 @@ from pathlib import Path
 
 import torch
 
-from config import DataConfig
+from original_llm.config import DataConfig
 
 
 HEADER_GUIDE_RE = re.compile(
