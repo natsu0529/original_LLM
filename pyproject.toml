@@ -1,0 +1,13 @@
+[project]
+name = "original-llm"
+version = "0.1.0"
+description = "Minimal decoder-only LLM experiments trained from scratch with PyTorch."
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "numpy>=2.4.4",
+    "torch==2.9.1",
+]
+
+[tool.uv]
+package = false

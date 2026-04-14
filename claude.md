@@ -8,6 +8,7 @@
 - 外部モデルの重み流用は禁止
 - まずはPyTorchと標準ライブラリ中心で進める
 - 性能改善より、学習が通ることを優先する
+- Python バージョンと依存管理は `uv` を使う
 
 ## Technical Direction
 
@@ -56,6 +57,14 @@
 
 M4 Mac mini 32GB では MPS 資源が限られるため、重い学習の完全並行は前提にしない。
 ただし、軽量実験を別 run として並行に回せる設計は維持する。
+
+## Environment Rules
+
+- 実行例は `python3` 直打ちではなく `uv run python ...` を優先する
+- 依存追加は `uv add`
+- 依存削除は `uv remove`
+- lock 更新は `uv lock`
+- Python バージョンは `.python-version` と `pyproject.toml` の両方で揃える
 
 ## First Deliverable
 
