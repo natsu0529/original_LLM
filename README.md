@@ -131,6 +131,46 @@ original_LLM/
 - 1ファイル過学習を最初の成功条件にする
 - 依存関係は増やしすぎない
 
+## Training Operations
+
+このリポジトリの学習運用は、最初から以下を前提にする。
+
+- `caffeinate` を付けてスリープで学習を止めない
+- `tmux` 上で学習を実行し、切断や端末終了に備える
+- checkpoint を定期保存し、`resume` で再開できるようにする
+- 複数実験を並行で回せるように、run ごとに出力先を分離する
+
+想定コマンド例:
+
+```bash
+caffeinate -dimsu tmux new -s llm-train
+```
+
+`tmux` の中で学習:
+
+```bash
+python3 src/train.py --run-name dazai-debug
+```
+
+再開:
+
+```bash
+python3 src/train.py --run-name dazai-debug --resume checkpoints/dazai-debug/latest.pt
+```
+
+並行実験:
+
+```bash
+python3 src/train.py --run-name dazai-a --limit 8
+python3 src/train.py --run-name dazai-b --limit 32
+```
+
+並行で回す場合は、checkpoint、sample、log の出力先を `run_name` 単位で必ず分ける。
+同一ファイルへ複数プロセスが書く構成は避ける。
+
+M4 Mac mini 32GB では、重い MPS 学習を同時に複数本走らせると競合しやすい。
+そのため、実運用では「重い本学習を1本 + 軽い検証を1本」程度から始める。
+
 ## Data Acquisition
 
 学習データは当面、青空文庫の太宰治作品を使います。
@@ -157,4 +197,4 @@ python3 scripts/download_aozora_dazai.py
 
 ## Status
 
-データ収集導線の実装を開始。
+データ収集導線の実装を開始。学習系の実装は `caffeinate + tmux + resume + run_name 分離` を前提に進める。
