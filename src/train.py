@@ -53,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-iters", type=int, default=10)
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--save-every", type=int, default=100)
+    parser.add_argument(
+        "--no-step-checkpoints",
+        action="store_true",
+        help="Only keep best.pt and latest.pt, without per-step checkpoint snapshots.",
+    )
     parser.add_argument("--sample-every", type=int, default=100)
     parser.add_argument("--sample-tokens", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.8)
@@ -200,6 +205,20 @@ def checkpoint_payload(
     }
 
 
+def atomic_torch_save(payload: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    try:
+        torch.save(payload, tmp_path)
+        tmp_path.replace(path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
 def save_checkpoint(
     model: DecoderOnlyTransformer,
     optimizer: torch.optim.Optimizer,
@@ -210,7 +229,7 @@ def save_checkpoint(
     data_config: DataConfig,
     model_config: ModelConfig,
     args: argparse.Namespace,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path | None]:
     run_config.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     payload = checkpoint_payload(
         model=model,
@@ -225,9 +244,11 @@ def save_checkpoint(
     )
 
     latest_path = run_config.checkpoint_dir / "latest.pt"
-    step_path = run_config.checkpoint_dir / f"step_{step:07d}.pt"
-    torch.save(payload, latest_path)
-    torch.save(payload, step_path)
+    atomic_torch_save(payload, latest_path)
+    step_path: Path | None = None
+    if not args.no_step_checkpoints:
+        step_path = run_config.checkpoint_dir / f"step_{step:07d}.pt"
+        atomic_torch_save(payload, step_path)
     return latest_path, step_path
 
 
@@ -255,7 +276,7 @@ def save_best_checkpoint(
         args=args,
     )
     best_path = run_config.checkpoint_dir / "best.pt"
-    torch.save(payload, best_path)
+    atomic_torch_save(payload, best_path)
     return best_path
 
 
@@ -529,7 +550,8 @@ def main() -> int:
                 args=args,
             )
             print(f"checkpoint_latest={latest_path}")
-            print(f"checkpoint_step={step_path}")
+            if step_path is not None:
+                print(f"checkpoint_step={step_path}")
 
     return 0
 

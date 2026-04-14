@@ -286,6 +286,37 @@ uv run python scripts/download_aozora_dazai.py
 
 最初の実験では `--limit` 付きで数作品だけ取得し、導線が固まったら全件に切り替える。
 
+太宰に近い作家をまとめて取得する mixed corpus 用スクリプト:
+
+```bash
+uv run python scripts/download_aozora_authors.py
+```
+
+既定の対象:
+
+- 太宰治
+- 芥川龍之介
+- 坂口安吾
+- 織田作之助
+- 梶井基次郎
+- 中島敦
+
+出力先:
+
+- `data/raw/aozora/dazai_peers/zips/`
+- `data/raw/aozora/dazai_peers/txt/`
+- `data/raw/aozora/dazai_peers/manifest.jsonl`
+- `data/raw/aozora/dazai_peers/summary.json`
+
+既存チェックポイントのトークナイザで未知文字率を確認する例:
+
+```bash
+uv run python scripts/check_tokenizer_coverage.py \
+  --checkpoint checkpoints/dazai-char-512x8/best.pt \
+  --data-dir data/raw/aozora/dazai_peers/txt \
+  --manifest-path data/raw/aozora/dazai_peers/manifest.jsonl
+```
+
 ## Dialogue Candidate Extraction
 
 青空文庫の太宰テキストから、`「...」` に包まれた発話候補を JSONL に抜き出すスクリプトを用意している。
