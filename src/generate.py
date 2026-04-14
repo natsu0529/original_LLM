@@ -11,6 +11,8 @@ from model import DecoderOnlyTransformer, count_parameters
 
 
 DEFAULT_CHECKPOINT = REPO_ROOT / "checkpoints" / "dazai-long" / "best.pt"
+DEFAULT_MAX_NEW_TOKENS = 64
+DEFAULT_MIN_NEW_CHARS_BEFORE_STOP = 24
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,9 +30,26 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--prompt", type=str, default="太宰治")
-    parser.add_argument("--max-new-tokens", type=int, default=200)
+    parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=40)
+    parser.add_argument("--repetition-penalty", type=float, default=1.0)
+    parser.add_argument("--repetition-window", type=int, default=128)
+    parser.add_argument(
+        "--stop-at-period",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--stop-at-blank-line",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--min-new-chars-before-stop",
+        type=int,
+        default=DEFAULT_MIN_NEW_CHARS_BEFORE_STOP,
+    )
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--carry-context", action="store_true")
     parser.add_argument("--show-meta", action="store_true")
@@ -78,6 +97,77 @@ def load_generator(
     return model, tokenizer, checkpoint
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    if args.max_new_tokens <= 0:
+        raise ValueError(f"max_new_tokens must be positive, got {args.max_new_tokens}")
+    if args.top_k < 0:
+        raise ValueError(f"top_k must be non-negative, got {args.top_k}")
+    if args.repetition_penalty < 1.0:
+        raise ValueError(
+            f"repetition_penalty must be >= 1.0, got {args.repetition_penalty}"
+        )
+    if args.repetition_window < 0:
+        raise ValueError(
+            f"repetition_window must be non-negative, got {args.repetition_window}"
+        )
+    if args.min_new_chars_before_stop < 0:
+        raise ValueError(
+            "min_new_chars_before_stop must be non-negative, "
+            f"got {args.min_new_chars_before_stop}"
+        )
+
+
+def trim_text_to_context(
+    text: str,
+    tokenizer: Tokenizer,
+    context_length: int,
+) -> str:
+    tokens = tokenizer.encode(text)
+    if len(tokens) <= context_length:
+        return text
+    return tokenizer.decode(tokens[-context_length:]).lstrip()
+
+
+def apply_repetition_penalty(
+    next_token_logits: torch.Tensor,
+    recent_token_ids: list[int],
+    penalty: float,
+) -> torch.Tensor:
+    if penalty <= 1.0 or not recent_token_ids:
+        return next_token_logits
+
+    adjusted_logits = next_token_logits.clone()
+    for token_id in set(recent_token_ids):
+        token_logits = adjusted_logits[:, token_id]
+        adjusted_logits[:, token_id] = torch.where(
+            token_logits < 0,
+            token_logits * penalty,
+            token_logits / penalty,
+        )
+    return adjusted_logits
+
+
+def should_stop_early(
+    generated_suffix_text: str,
+    args: argparse.Namespace,
+) -> bool:
+    if args.stop_at_blank_line and "\n\n" in generated_suffix_text:
+        return True
+
+    if not args.stop_at_period:
+        return False
+
+    visible_text = generated_suffix_text.strip()
+    if len(visible_text) < args.min_new_chars_before_stop:
+        return False
+    return visible_text.endswith("。")
+
+
+def print_block(label: str, text: str) -> None:
+    print(f"[{label}]")
+    print(text.rstrip() or "(empty)")
+
+
 @torch.no_grad()
 def generate_text(
     model: DecoderOnlyTransformer,
@@ -86,6 +176,11 @@ def generate_text(
     max_new_tokens: int,
     temperature: float,
     top_k: int,
+    repetition_penalty: float,
+    repetition_window: int,
+    stop_at_period: bool,
+    stop_at_blank_line: bool,
+    min_new_chars_before_stop: int,
     device: torch.device,
 ) -> str:
     tokens = tokenizer.encode(prompt)
@@ -95,11 +190,24 @@ def generate_text(
         raise ValueError("Tokenizer failed to encode fallback prompt")
 
     idx = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
+    stop_args = argparse.Namespace(
+        stop_at_period=stop_at_period,
+        stop_at_blank_line=stop_at_blank_line,
+        min_new_chars_before_stop=min_new_chars_before_stop,
+    )
 
     for _ in range(max_new_tokens):
         idx_cond = idx[:, -model.config.context_length :]
         logits, _ = model(idx_cond)
         next_token_logits = logits[:, -1, :]
+        recent_tokens = (
+            idx[0, -repetition_window:].tolist() if repetition_window > 0 else []
+        )
+        next_token_logits = apply_repetition_penalty(
+            next_token_logits,
+            recent_tokens,
+            repetition_penalty,
+        )
 
         if temperature <= 0:
             next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
@@ -117,6 +225,10 @@ def generate_text(
             next_token = torch.multinomial(probs, num_samples=1)
 
         idx = torch.cat((idx, next_token), dim=1)
+        generated = tokenizer.decode(idx[0].tolist())
+        suffix = generated_suffix(prompt, generated)
+        if should_stop_early(suffix, stop_args):
+            break
 
     return tokenizer.decode(idx[0].tolist())
 
@@ -154,6 +266,8 @@ def interactive_loop(
     print(":quit or :exit で終了")
     print(":reset で文脈をリセット")
     print(":help でヘルプ")
+    if args.carry_context:
+        print("carry-context: on")
 
     history = ""
     while True:
@@ -179,11 +293,16 @@ def interactive_loop(
             print("input text to generate continuation")
             print(":reset -> clear history")
             print(":quit  -> exit")
+            print(f"carry-context -> {'on' if args.carry_context else 'off'}")
             continue
 
         prompt = user_input
         if args.carry_context and history:
-            prompt = f"{history}\n{user_input}"
+            prompt = trim_text_to_context(
+                f"{history}\n{user_input}",
+                tokenizer,
+                model.config.context_length,
+            )
 
         generated = generate_text(
             model=model,
@@ -192,17 +311,31 @@ def interactive_loop(
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
             top_k=args.top_k,
+            repetition_penalty=args.repetition_penalty,
+            repetition_window=args.repetition_window,
+            stop_at_period=args.stop_at_period,
+            stop_at_blank_line=args.stop_at_blank_line,
+            min_new_chars_before_stop=args.min_new_chars_before_stop,
             device=device,
         )
         suffix = generated_suffix(prompt, generated)
-        print(suffix.strip() or generated.strip())
+        print()
+        print_block("prompt", prompt)
+        print()
+        print_block("output", suffix or generated)
+        print()
 
         if args.carry_context:
-            history = generated
+            history = trim_text_to_context(
+                generated,
+                tokenizer,
+                model.config.context_length,
+            )
 
 
 def main() -> int:
     args = parse_args()
+    validate_args(args)
     set_seed(args.seed)
     device = choose_device(args.device)
     model, tokenizer, checkpoint = load_generator(args.checkpoint, device)
@@ -221,6 +354,11 @@ def main() -> int:
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         top_k=args.top_k,
+        repetition_penalty=args.repetition_penalty,
+        repetition_window=args.repetition_window,
+        stop_at_period=args.stop_at_period,
+        stop_at_blank_line=args.stop_at_blank_line,
+        min_new_chars_before_stop=args.min_new_chars_before_stop,
         device=device,
     )
     print(generated)

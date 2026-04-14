@@ -227,6 +227,19 @@ uv run python src/generate.py --checkpoint checkpoints/dazai-long/best.pt --inte
 uv run python src/generate.py --checkpoint checkpoints/dazai-long/best.pt --interactive --carry-context
 ```
 
+現在の `generate.py` は、デバッグ用途を優先して以下を既定で持つ。
+
+- `max_new_tokens=64`
+- `。` または空行での簡易 stop
+- interactive 時の `prompt` / `output` 表示
+- 必要なら `--repetition-penalty 1.1` のような軽い繰り返し抑制
+
+短めに試す例:
+
+```bash
+uv run python src/generate.py --checkpoint checkpoints/dazai-char/best.pt --interactive --max-new-tokens 40
+```
+
 ## Data Acquisition
 
 学習データは当面、青空文庫の太宰治作品を使います。
