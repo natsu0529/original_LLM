@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import textwrap
 import urllib.request
 from pathlib import Path
 
@@ -23,6 +24,9 @@ DEFAULT_CHAT_MAX_NEW_TOKENS = 48
 DEFAULT_CHAT_TEMPERATURE = 0.2
 DEFAULT_CHAT_TOP_K = 8
 DEFAULT_CHAT_REPETITION_PENALTY = 1.1
+DEFAULT_CHAT_DOWNLOAD_URL = (
+    "https://github.com/natsu0529/original_LLM/releases/download/v0.1.0/best.pt"
+)
 
 
 def download_checkpoint(url: str, dest: Path) -> None:
@@ -34,7 +38,11 @@ def download_checkpoint(url: str, dest: Path) -> None:
     print(f"Saved to {dest}")
 
 
-def resolve_checkpoint(args: argparse.Namespace) -> Path:
+def resolve_checkpoint(
+    args: argparse.Namespace,
+    *,
+    default_download_url: str | None = None,
+) -> Path:
     if args.checkpoint is not None:
         path = Path(args.checkpoint)
         if not path.exists():
@@ -46,7 +54,8 @@ def resolve_checkpoint(args: argparse.Namespace) -> Path:
     if cached.exists():
         return cached
 
-    if args.download_url is None:
+    url = args.download_url or default_download_url
+    if url is None:
         print(
             "Error: no checkpoint found.\n"
             "Specify --checkpoint <path> or --download-url <url>",
@@ -54,7 +63,7 @@ def resolve_checkpoint(args: argparse.Namespace) -> Path:
         )
         raise SystemExit(1)
 
-    download_checkpoint(args.download_url, cached)
+    download_checkpoint(url, cached)
     return cached
 
 
@@ -81,6 +90,7 @@ def parse_args(
     *,
     prog: str,
     description: str,
+    epilog: str | None = None,
     default_checkpoint: str | None = None,
     default_interactive: bool = False,
     default_carry_context: bool = False,
@@ -94,49 +104,111 @@ def parse_args(
     parser = argparse.ArgumentParser(
         prog=prog,
         description=description,
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("prompt", nargs="?", default=None, help="Input prompt text")
-    parser.add_argument("--checkpoint", type=str, default=default_checkpoint)
-    parser.add_argument("--download-url", type=str, default=None)
+    parser.add_argument(
+        "prompt",
+        nargs="?",
+        default=None,
+        help="One-shot input prompt. Omit this in interactive chat mode.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=default_checkpoint,
+        help="Local checkpoint path. If omitted, use the cached or auto-detected model.",
+    )
+    parser.add_argument(
+        "--download-url",
+        type=str,
+        default=None,
+        help="Checkpoint URL to download on first run when no local cache exists.",
+    )
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "mps", "cuda"],
         default="auto",
+        help="Inference device. 'auto' prefers MPS, then CUDA, then CPU.",
     )
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-new-tokens", type=int, default=default_max_new_tokens)
-    parser.add_argument("--temperature", type=float, default=default_temperature)
-    parser.add_argument("--top-k", type=int, default=default_top_k)
-    parser.add_argument("--repetition-penalty", type=float, default=default_repetition_penalty)
-    parser.add_argument("--repetition-window", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for sampling.")
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=default_max_new_tokens,
+        help="Maximum number of generated tokens.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=default_temperature,
+        help="Sampling temperature. Lower is steadier.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=default_top_k,
+        help="Top-k sampling cutoff.",
+    )
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=default_repetition_penalty,
+        help="Penalty applied to recently used tokens. 1.0 disables it.",
+    )
+    parser.add_argument(
+        "--repetition-window",
+        type=int,
+        default=128,
+        help="How many recent tokens are considered by repetition penalty.",
+    )
     parser.add_argument(
         "--stop-at-period",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Stop after sentence-ending punctuation once enough text was produced.",
     )
     parser.add_argument(
         "--stop-at-blank-line",
         action=argparse.BooleanOptionalAction,
         default=True,
+        help="Stop when a blank line is generated.",
     )
     parser.add_argument(
         "--min-new-chars-before-stop",
         type=int,
         default=DEFAULT_MIN_NEW_CHARS_BEFORE_STOP,
+        help="Minimum visible characters before stop conditions can trigger.",
     )
     parser.add_argument(
         "--interactive",
         action=argparse.BooleanOptionalAction,
         default=default_interactive,
+        help="Start a chat REPL instead of one-shot generation.",
     )
     parser.add_argument(
         "--carry-context",
         action=argparse.BooleanOptionalAction,
         default=default_carry_context,
+        help="Keep session history within the current interactive run.",
     )
-    parser.add_argument("--user-label", type=str, default=default_user_label)
-    parser.add_argument("--reply-label", type=str, default=default_reply_label)
-    parser.add_argument("--show-meta", action="store_true")
+    parser.add_argument(
+        "--user-label",
+        type=str,
+        default=default_user_label,
+        help="Role label for user turns, for example '私'.",
+    )
+    parser.add_argument(
+        "--reply-label",
+        type=str,
+        default=default_reply_label,
+        help="Role label for model replies, for example '相手'.",
+    )
+    parser.add_argument(
+        "--show-meta",
+        action="store_true",
+        help="Print checkpoint metadata before generation.",
+    )
     return parser.parse_args()
 
 
@@ -144,7 +216,9 @@ def run_cli(
     *,
     prog: str,
     description: str,
+    epilog: str | None = None,
     default_checkpoint: str | None = None,
+    default_download_url: str | None = None,
     default_interactive: bool = False,
     default_carry_context: bool = False,
     default_user_label: str | None = None,
@@ -157,6 +231,7 @@ def run_cli(
     args = parse_args(
         prog=prog,
         description=description,
+        epilog=epilog,
         default_checkpoint=default_checkpoint,
         default_interactive=default_interactive,
         default_carry_context=default_carry_context,
@@ -170,7 +245,7 @@ def run_cli(
     validate_args(args)
     set_seed(args.seed)
     device = choose_device(args.device)
-    checkpoint_path = resolve_checkpoint(args)
+    checkpoint_path = resolve_checkpoint(args, default_download_url=default_download_url)
     model, tokenizer, checkpoint = load_generator(checkpoint_path, device)
 
     if args.show_meta:
@@ -204,6 +279,14 @@ def main() -> int:
     return run_cli(
         prog="original-llm",
         description="Generate text with a small LLM trained from scratch.",
+        epilog=textwrap.dedent(
+            """
+            Examples:
+              original-llm "私は"
+              original-llm --interactive --checkpoint checkpoints/dazai-long/best.pt
+              original-llm --show-meta --checkpoint checkpoints/dazai-friend-peers-512x8-v1/best.pt
+            """
+        ).strip(),
     )
 
 
@@ -211,8 +294,39 @@ def main_chat() -> int:
     chat_checkpoint = preferred_chat_checkpoint()
     return run_cli(
         prog="dazai-chat",
-        description="Chat with the current Dazai-style checkpoint using conversation defaults.",
+        description=(
+            "Chat with the current Dazai-style checkpoint using conversation defaults.\n"
+            "If no local checkpoint is found, the first run downloads one into "
+            "~/.cache/original-llm/best.pt ."
+        ),
+        epilog=textwrap.dedent(
+            f"""
+            Quick Start:
+              dazai-chat
+              dazai-chat --show-meta
+              dazai-chat --no-carry-context
+
+            One-shot example:
+              dazai-chat $'私: 酒飲もうぜ\\n相手: '
+
+            Interactive commands:
+              :help   show in-chat help
+              :reset  clear session history
+              :quit   exit
+
+            Defaults:
+              interactive=True
+              carry-context=True
+              user-label=私
+              reply-label=相手
+              temperature={DEFAULT_CHAT_TEMPERATURE}
+              top-k={DEFAULT_CHAT_TOP_K}
+              repetition-penalty={DEFAULT_CHAT_REPETITION_PENALTY}
+              max-new-tokens={DEFAULT_CHAT_MAX_NEW_TOKENS}
+            """
+        ).strip(),
         default_checkpoint=str(chat_checkpoint) if chat_checkpoint is not None else None,
+        default_download_url=DEFAULT_CHAT_DOWNLOAD_URL,
         default_interactive=True,
         default_carry_context=True,
         default_user_label="私",

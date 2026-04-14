@@ -331,12 +331,13 @@ def interactive_loop(
             print("(reset)")
             continue
         if command == ":help":
-            print("input text to generate continuation")
-            print(":reset -> clear history")
-            print(":quit  -> exit")
+            print("テキストを入力すると返答を生成")
+            print(":reset -> この起動中の会話履歴を消す")
+            print(":quit  -> 終了")
             print(f"carry-context -> {'on' if args.carry_context else 'off'}")
             if args.user_label is not None and args.reply_label is not None:
                 print(f"labels -> {args.user_label}/{args.reply_label}")
+            print(f"max-new-tokens -> {args.max_new_tokens}")
             continue
 
         prompt = build_interactive_prompt(

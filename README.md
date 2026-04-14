@@ -249,6 +249,12 @@ uv run python src/generate.py \
 uv run dazai-chat
 ```
 
+使い方はまずこれで確認できる:
+
+```bash
+uv run dazai-chat --help
+```
+
 これは現在の会話向け checkpoint を自動で拾い、次を既定で有効にする。
 
 - `--interactive`
