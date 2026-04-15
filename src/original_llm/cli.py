@@ -466,6 +466,20 @@ def parse_args(
     return parser.parse_args()
 
 
+def resolve_interactive_mode(
+    args: argparse.Namespace,
+    argv: list[str] | None = None,
+) -> bool:
+    argv = argv if argv is not None else sys.argv[1:]
+    if "--interactive" in argv:
+        return True
+    if "--no-interactive" in argv:
+        return False
+    if args.prompt is not None:
+        return False
+    return bool(args.interactive)
+
+
 def run_cli(
     *,
     prog: str,
@@ -505,6 +519,7 @@ def run_cli(
     if not update_check_disabled():
         maybe_notify_about_update()
 
+    args.interactive = resolve_interactive_mode(args)
     validate_args(args)
     set_seed(args.seed)
     device = choose_device(args.device)
@@ -516,13 +531,6 @@ def run_cli(
         print_meta(checkpoint_path, checkpoint, tokenizer, model, device)
 
     if args.interactive:
-        if args.prompt is not None:
-            print(
-                "Error: positional prompt cannot be used in interactive mode.\n"
-                "Use --no-interactive for one-shot generation.",
-                file=sys.stderr,
-            )
-            return 1
         interactive_loop(model, tokenizer, args, device)
         return 0
 
