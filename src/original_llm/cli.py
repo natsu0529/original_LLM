@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import re
 import sys
 import textwrap
+import time
 import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
+from functools import lru_cache
+from importlib import metadata
 from pathlib import Path
+import tomllib
 
 from original_llm.config import REPO_ROOT
 from original_llm.generate import (
     DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_MIN_NEW_CHARS_BEFORE_STOP,
+    chat_stop_sequences,
     choose_device,
     generate_text,
     interactive_loop,
@@ -19,7 +29,12 @@ from original_llm.generate import (
 )
 
 CACHE_DIR = Path.home() / ".cache" / "original-llm"
+PACKAGE_NAME = "original-llm"
 DEFAULT_CHECKPOINT_NAME = "best.pt"
+UPDATE_CHECK_CACHE_NAME = "update-check.json"
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_CHECK_TIMEOUT_SECONDS = 1.0
+DISABLE_UPDATE_CHECK_ENV = "ORIGINAL_LLM_DISABLE_UPDATE_CHECK"
 DEFAULT_CHAT_MAX_NEW_TOKENS = 48
 DEFAULT_CHAT_TEMPERATURE = 0.2
 DEFAULT_CHAT_TOP_K = 8
@@ -27,6 +42,20 @@ DEFAULT_CHAT_REPETITION_PENALTY = 1.1
 DEFAULT_CHAT_DOWNLOAD_URL = (
     "https://github.com/natsu0529/original_LLM/releases/download/v0.1.0/best.pt"
 )
+RELEASE_VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+@dataclass(slots=True)
+class UpdateCheckResult:
+    installed_version: str
+    latest_version: str | None
+    cache: dict[str, object]
+
+    @property
+    def update_available(self) -> bool:
+        if self.latest_version is None:
+            return False
+        return is_newer_version(self.latest_version, self.installed_version)
 
 
 def download_checkpoint(url: str, dest: Path) -> None:
@@ -86,6 +115,214 @@ def preferred_chat_checkpoint() -> Path | None:
     return None
 
 
+@lru_cache(maxsize=1)
+def package_version_string() -> str:
+    try:
+        return metadata.version(PACKAGE_NAME)
+    except metadata.PackageNotFoundError:
+        pyproject_path = REPO_ROOT / "pyproject.toml"
+        try:
+            with pyproject_path.open("rb") as handle:
+                project = tomllib.load(handle).get("project", {})
+        except (OSError, tomllib.TOMLDecodeError):
+            return "0.0.0"
+        version = project.get("version")
+        if isinstance(version, str) and version.strip():
+            return version.strip()
+        return "0.0.0"
+
+
+def update_check_cache_path() -> Path:
+    return CACHE_DIR / UPDATE_CHECK_CACHE_NAME
+
+
+def version_parts(version_text: str) -> tuple[int, ...] | None:
+    normalized = version_text.strip()
+    if not RELEASE_VERSION_RE.fullmatch(normalized):
+        return None
+    parts = tuple(int(part) for part in normalized.split("."))
+    trimmed = list(parts)
+    while trimmed and trimmed[-1] == 0:
+        trimmed.pop()
+    return tuple(trimmed)
+
+
+def is_newer_version(candidate: str, current: str) -> bool:
+    candidate_parts = version_parts(candidate)
+    current_parts = version_parts(current)
+    if candidate_parts is None or current_parts is None:
+        return candidate.strip() != current.strip()
+
+    width = max(len(candidate_parts), len(current_parts))
+    padded_candidate = candidate_parts + (0,) * (width - len(candidate_parts))
+    padded_current = current_parts + (0,) * (width - len(current_parts))
+    return padded_candidate > padded_current
+
+
+def update_check_disabled() -> bool:
+    value = os.getenv(DISABLE_UPDATE_CHECK_ENV)
+    if value is None:
+        return False
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def load_update_check_cache(
+    cache_path: Path | None = None,
+) -> dict[str, object]:
+    path = cache_path or update_check_cache_path()
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_update_check_cache(
+    cache: dict[str, object],
+    cache_path: Path | None = None,
+) -> None:
+    path = cache_path or update_check_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(cache, handle)
+        tmp.replace(path)
+    except OSError:
+        return
+
+
+def cached_latest_version(
+    cache: dict[str, object],
+    *,
+    now: float,
+) -> str | None:
+    checked_at = cache.get("checked_at")
+    latest_version = cache.get("latest_version")
+    if not isinstance(checked_at, (int, float)):
+        return None
+    if not isinstance(latest_version, str) or not latest_version.strip():
+        return None
+    if now - float(checked_at) > UPDATE_CHECK_INTERVAL_SECONDS:
+        return None
+    return latest_version.strip()
+
+
+def fetch_latest_pypi_version(
+    package_name: str = PACKAGE_NAME,
+    *,
+    timeout_seconds: float = UPDATE_CHECK_TIMEOUT_SECONDS,
+) -> str | None:
+    url = f"https://pypi.org/pypi/{package_name}/json"
+    with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    info = payload.get("info", {})
+    version = info.get("version")
+    if not isinstance(version, str) or not version.strip():
+        return None
+    return version.strip()
+
+
+def check_for_updates(
+    installed_version: str,
+    *,
+    cache_path: Path | None = None,
+    now: float | None = None,
+    force: bool = False,
+    fetch_latest_version: Callable[[], str | None] | None = None,
+) -> UpdateCheckResult:
+    path = cache_path or update_check_cache_path()
+    fetcher = fetch_latest_version or fetch_latest_pypi_version
+    current_time = time.time() if now is None else now
+    cache = load_update_check_cache(path)
+
+    latest_version = None if force else cached_latest_version(cache, now=current_time)
+    if latest_version is None:
+        try:
+            latest_version = fetcher()
+        except Exception:
+            cached_version = cache.get("latest_version")
+            latest_version = (
+                cached_version.strip()
+                if isinstance(cached_version, str) and cached_version.strip()
+                else None
+            )
+        else:
+            cache["checked_at"] = current_time
+            cache["latest_version"] = latest_version
+            save_update_check_cache(cache, path)
+
+    return UpdateCheckResult(
+        installed_version=installed_version,
+        latest_version=latest_version,
+        cache=cache,
+    )
+
+
+def should_notify_about_update(result: UpdateCheckResult) -> bool:
+    if not result.update_available or result.latest_version is None:
+        return False
+    notified_version = result.cache.get("notified_version")
+    return notified_version != result.latest_version
+
+
+def mark_update_notified(
+    cache: dict[str, object],
+    latest_version: str,
+    *,
+    cache_path: Path | None = None,
+) -> None:
+    cache["notified_version"] = latest_version
+    save_update_check_cache(cache, cache_path)
+
+
+def print_update_notice(
+    latest_version: str,
+    *,
+    stream: object = sys.stderr,
+) -> None:
+    print(
+        f"A newer version of {PACKAGE_NAME} is available: {latest_version}",
+        file=stream,
+    )
+    print("Run: uv tool upgrade original-llm", file=stream)
+
+
+def maybe_notify_about_update(
+    *,
+    force: bool = False,
+    stream: object = sys.stderr,
+    cache_path: Path | None = None,
+    fetch_latest_version: Callable[[], str | None] | None = None,
+) -> bool:
+    installed_version = package_version_string()
+    result = check_for_updates(
+        installed_version,
+        cache_path=cache_path,
+        force=force,
+        fetch_latest_version=fetch_latest_version,
+    )
+    if result.latest_version is None:
+        if force:
+            print(f"Could not check for updates for {PACKAGE_NAME}.", file=stream)
+        return False
+
+    if result.update_available:
+        if force or should_notify_about_update(result):
+            print_update_notice(result.latest_version, stream=stream)
+            mark_update_notified(
+                result.cache,
+                result.latest_version,
+                cache_path=cache_path,
+            )
+        return True
+
+    if force:
+        print(f"{PACKAGE_NAME} is up to date ({installed_version}).", file=stream)
+    return False
+
+
 def parse_args(
     *,
     prog: str,
@@ -100,12 +337,18 @@ def parse_args(
     default_top_k: int = 40,
     default_repetition_penalty: float = 1.0,
     default_max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    default_show_prompt_output: bool = True,
 ) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=prog,
         description=description,
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {package_version_string()}",
     )
     parser.add_argument(
         "prompt",
@@ -209,6 +452,17 @@ def parse_args(
         action="store_true",
         help="Print checkpoint metadata before generation.",
     )
+    parser.add_argument(
+        "--show-prompt-output",
+        action=argparse.BooleanOptionalAction,
+        default=default_show_prompt_output,
+        help="Print prompt/output debug blocks in interactive mode.",
+    )
+    parser.add_argument(
+        "--check-update",
+        action="store_true",
+        help="Check PyPI for a newer package version and exit.",
+    )
     return parser.parse_args()
 
 
@@ -227,6 +481,7 @@ def run_cli(
     default_top_k: int = 40,
     default_repetition_penalty: float = 1.0,
     default_max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    default_show_prompt_output: bool = True,
 ) -> int:
     args = parse_args(
         prog=prog,
@@ -241,7 +496,15 @@ def run_cli(
         default_top_k=default_top_k,
         default_repetition_penalty=default_repetition_penalty,
         default_max_new_tokens=default_max_new_tokens,
+        default_show_prompt_output=default_show_prompt_output,
     )
+    if args.check_update:
+        maybe_notify_about_update(force=True, stream=sys.stdout)
+        return 0
+
+    if not update_check_disabled():
+        maybe_notify_about_update()
+
     validate_args(args)
     set_seed(args.seed)
     device = choose_device(args.device)
@@ -253,6 +516,13 @@ def run_cli(
         print_meta(checkpoint_path, checkpoint, tokenizer, model, device)
 
     if args.interactive:
+        if args.prompt is not None:
+            print(
+                "Error: positional prompt cannot be used in interactive mode.\n"
+                "Use --no-interactive for one-shot generation.",
+                file=sys.stderr,
+            )
+            return 1
         interactive_loop(model, tokenizer, args, device)
         return 0
 
@@ -270,6 +540,7 @@ def run_cli(
         stop_at_blank_line=args.stop_at_blank_line,
         min_new_chars_before_stop=args.min_new_chars_before_stop,
         device=device,
+        stop_sequences=chat_stop_sequences(args.user_label, args.reply_label),
     )
     print(generated)
     return 0
@@ -307,7 +578,7 @@ def main_chat() -> int:
               dazai-chat --no-carry-context
 
             One-shot example:
-              dazai-chat $'私: 酒飲もうぜ\\n相手: '
+              dazai-chat --no-interactive $'私: 酒飲もうぜ\\n相手: '
 
             Interactive commands:
               :help   show in-chat help
@@ -335,6 +606,7 @@ def main_chat() -> int:
         default_top_k=DEFAULT_CHAT_TOP_K,
         default_repetition_penalty=DEFAULT_CHAT_REPETITION_PENALTY,
         default_max_new_tokens=DEFAULT_CHAT_MAX_NEW_TOKENS,
+        default_show_prompt_output=False,
     )
 
 

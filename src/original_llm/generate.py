@@ -56,6 +56,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user-label", type=str, default=None)
     parser.add_argument("--reply-label", type=str, default=None)
     parser.add_argument("--show-meta", action="store_true")
+    parser.add_argument(
+        "--show-prompt-output",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print prompt/output debug blocks in interactive mode.",
+    )
     return parser.parse_args()
 
 
@@ -181,6 +187,59 @@ def role_prompt(label: str) -> str:
     return f"{label}: "
 
 
+def chat_stop_sequences(
+    user_label: str | None,
+    reply_label: str | None,
+) -> tuple[str, ...]:
+    if user_label is None or reply_label is None:
+        return ()
+    return (f"\n{role_prefix(user_label)}", f"\n{role_prefix(reply_label)}")
+
+
+def contains_stop_sequence(text: str, stop_sequences: tuple[str, ...]) -> bool:
+    return any(sequence and sequence in text for sequence in stop_sequences)
+
+
+def extract_chat_reply(
+    text: str,
+    user_label: str,
+    reply_label: str,
+) -> str:
+    reply = text.lstrip()
+    for prefix in (role_prompt(reply_label), role_prefix(reply_label)):
+        if reply.startswith(prefix):
+            reply = reply[len(prefix) :].lstrip()
+            break
+
+    stop_positions: list[int] = []
+    for sequence in chat_stop_sequences(user_label, reply_label):
+        position = reply.find(sequence)
+        if position != -1:
+            stop_positions.append(position)
+    if stop_positions:
+        reply = reply[: min(stop_positions)]
+
+    return reply.strip()
+
+
+def append_chat_history(
+    history: str,
+    user_input: str,
+    reply_text: str,
+    user_label: str,
+    reply_label: str,
+    tokenizer: Tokenizer,
+    context_length: int,
+) -> str:
+    turn = (
+        f"{role_prompt(user_label)}{user_input}\n"
+        f"{role_prompt(reply_label)}{reply_text}"
+    ).rstrip()
+    if history:
+        turn = f"{history}\n{turn}"
+    return trim_text_to_context(turn, tokenizer, context_length)
+
+
 def build_interactive_prompt(
     user_input: str,
     history: str,
@@ -221,6 +280,7 @@ def generate_text(
     stop_at_blank_line: bool,
     min_new_chars_before_stop: int,
     device: torch.device,
+    stop_sequences: tuple[str, ...] = (),
 ) -> str:
     tokens = tokenizer.encode(prompt)
     if not tokens:
@@ -266,6 +326,8 @@ def generate_text(
         idx = torch.cat((idx, next_token), dim=1)
         generated = tokenizer.decode(idx[0].tolist())
         suffix = generated_suffix(prompt, generated)
+        if contains_stop_sequence(suffix, stop_sequences):
+            break
         if should_stop_early(suffix, stop_args):
             break
 
@@ -301,6 +363,7 @@ def interactive_loop(
     args: argparse.Namespace,
     device: torch.device,
 ) -> None:
+    show_prompt_output = getattr(args, "show_prompt_output", True)
     print("interactive mode")
     print(":quit or :exit で終了")
     print(":reset で文脈をリセット")
@@ -335,6 +398,7 @@ def interactive_loop(
             print(":reset -> この起動中の会話履歴を消す")
             print(":quit  -> 終了")
             print(f"carry-context -> {'on' if args.carry_context else 'off'}")
+            print(f"show-prompt-output -> {'on' if show_prompt_output else 'off'}")
             if args.user_label is not None and args.reply_label is not None:
                 print(f"labels -> {args.user_label}/{args.reply_label}")
             print(f"max-new-tokens -> {args.max_new_tokens}")
@@ -361,20 +425,42 @@ def interactive_loop(
             stop_at_blank_line=args.stop_at_blank_line,
             min_new_chars_before_stop=args.min_new_chars_before_stop,
             device=device,
+            stop_sequences=chat_stop_sequences(args.user_label, args.reply_label),
         )
         suffix = generated_suffix(prompt, generated)
+        reply_text = suffix
+        if args.user_label is not None and args.reply_label is not None:
+            reply_text = extract_chat_reply(
+                suffix,
+                user_label=args.user_label,
+                reply_label=args.reply_label,
+            )
         print()
-        print_block("prompt", prompt)
-        print()
-        print_block("output", suffix or generated)
+        if show_prompt_output or args.user_label is None or args.reply_label is None:
+            print_block("prompt", prompt)
+            print()
+            print_block("output", reply_text or suffix or generated)
+        else:
+            print(f"{role_prompt(args.reply_label)}{reply_text}".rstrip())
         print()
 
         if args.carry_context:
-            history = trim_text_to_context(
-                generated,
-                tokenizer,
-                model.config.context_length,
-            )
+            if args.user_label is not None and args.reply_label is not None:
+                history = append_chat_history(
+                    history=history,
+                    user_input=user_input,
+                    reply_text=reply_text,
+                    user_label=args.user_label,
+                    reply_label=args.reply_label,
+                    tokenizer=tokenizer,
+                    context_length=model.config.context_length,
+                )
+            else:
+                history = trim_text_to_context(
+                    generated,
+                    tokenizer,
+                    model.config.context_length,
+                )
 
 
 def main() -> int:
@@ -404,6 +490,7 @@ def main() -> int:
         stop_at_blank_line=args.stop_at_blank_line,
         min_new_chars_before_stop=args.min_new_chars_before_stop,
         device=device,
+        stop_sequences=chat_stop_sequences(args.user_label, args.reply_label),
     )
     print(generated)
     return 0

@@ -266,6 +266,9 @@ uv run dazai-chat --help
 - `--repetition-penalty 1.1`
 - `--max-new-tokens 48`
 
+interactive では既定で `相手:` の返答だけを表示する。
+会話 prompt / 生の出力を見たいときだけ `--show-prompt-output` を付ける。
+
 疑似的に文脈を持たせたい場合:
 
 ```bash
