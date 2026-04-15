@@ -263,8 +263,11 @@ uv run dazai-chat --help
 
 - `--interactive`
 - `--carry-context`
+- `--max-history-turns 1`
 - `--user-label 私`
 - `--reply-label 相手`
+- `--retrieval-examples 1`
+- `--normalize-chat-input`
 - `--temperature 0.2`
 - `--top-k 8`
 - `--repetition-penalty 1.1`
@@ -272,6 +275,24 @@ uv run dazai-chat --help
 
 interactive では既定で `相手:` の返答だけを表示する。
 会話 prompt / 生の出力を見たいときだけ `--show-prompt-output` を付ける。
+
+`dazai-chat` は会話の質を少し安定させるために、既定で次も行う。
+
+- 会話履歴は全保持ではなく直近 `1` ターンだけを持つ
+- 近い `私:` / `相手:` 例を `1` 件だけ prompt の前に差す
+  - 既定では、手書きの `data/chat_seed_simple/` があればそれを優先して使う
+  - 短い雑談や口語を増やしたい時は、このディレクトリに `.txt` を足すと retrieval の候補に入る
+- 近い短文 seed がそのまま見つかった時は、その返答を優先して返す
+- 短い入力では、前の一手より現在の入力を優先して解釈する
+- `どゆこと？` のような短い口語入力を軽く正規化してから対話する
+
+調整したい時の例:
+
+```bash
+uv run dazai-chat --max-history-turns 3
+uv run dazai-chat --retrieval-examples 0
+uv run dazai-chat --no-normalize-chat-input
+```
 
 疑似的に文脈を持たせたい場合:
 

@@ -21,9 +21,14 @@ from original_llm.generate import (
     DEFAULT_MIN_NEW_CHARS_BEFORE_STOP,
     chat_stop_sequences,
     choose_device,
+    extract_pending_chat_user_input,
     generate_text,
+    generated_suffix,
     interactive_loop,
     load_generator,
+    prepare_chat_user_input,
+    prepend_chat_retrieval_examples,
+    select_direct_chat_reply,
     set_seed,
     validate_args,
 )
@@ -39,6 +44,8 @@ DEFAULT_CHAT_MAX_NEW_TOKENS = 48
 DEFAULT_CHAT_TEMPERATURE = 0.2
 DEFAULT_CHAT_TOP_K = 8
 DEFAULT_CHAT_REPETITION_PENALTY = 1.1
+DEFAULT_CHAT_MAX_HISTORY_TURNS = 1
+DEFAULT_CHAT_RETRIEVAL_EXAMPLES = 1
 DEFAULT_CHAT_DOWNLOAD_URL = (
     "https://github.com/natsu0529/original_LLM/releases/download/v0.1.0/best.pt"
 )
@@ -112,6 +119,43 @@ def preferred_chat_checkpoint() -> Path | None:
         )
         if candidates:
             return candidates[0]
+    return None
+
+
+def resolve_existing_dir(path_text: str | os.PathLike[str] | None) -> Path | None:
+    if path_text is None:
+        return None
+
+    raw_path = Path(path_text).expanduser()
+    candidates = [raw_path]
+    if not raw_path.is_absolute():
+        candidates.append(REPO_ROOT / raw_path)
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate.resolve()
+    return None
+
+
+def resolve_retrieval_corpus_dir(
+    args: argparse.Namespace,
+    checkpoint: dict,
+) -> str | None:
+    explicit_dir = getattr(args, "retrieval_corpus_dir", None)
+    resolved = resolve_existing_dir(explicit_dir)
+    if resolved is not None:
+        return str(resolved)
+
+    preferred_simple_dir = resolve_existing_dir(REPO_ROOT / "data" / "chat_seed_simple")
+    if preferred_simple_dir is not None:
+        return str(preferred_simple_dir)
+
+    checkpoint_args = checkpoint.get("args", {})
+    data_dir = checkpoint_args.get("data_dir")
+    if isinstance(data_dir, str) and data_dir.strip():
+        resolved = resolve_existing_dir(data_dir)
+        if resolved is not None:
+            return str(resolved)
     return None
 
 
@@ -338,6 +382,9 @@ def parse_args(
     default_repetition_penalty: float = 1.0,
     default_max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     default_show_prompt_output: bool = True,
+    default_max_history_turns: int | None = None,
+    default_retrieval_examples: int = 0,
+    default_normalize_chat_input: bool = False,
 ) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=prog,
@@ -436,6 +483,12 @@ def parse_args(
         help="Keep session history within the current interactive run.",
     )
     parser.add_argument(
+        "--max-history-turns",
+        type=int,
+        default=default_max_history_turns,
+        help="Maximum retained chat turns when carry-context is on. 0 disables history retention.",
+    )
+    parser.add_argument(
         "--user-label",
         type=str,
         default=default_user_label,
@@ -446,6 +499,24 @@ def parse_args(
         type=str,
         default=default_reply_label,
         help="Role label for model replies, for example '相手'.",
+    )
+    parser.add_argument(
+        "--retrieval-examples",
+        type=int,
+        default=default_retrieval_examples,
+        help="How many similar chat examples to prepend before answering.",
+    )
+    parser.add_argument(
+        "--retrieval-corpus-dir",
+        type=str,
+        default=None,
+        help="Directory of .txt chat seed files used for retrieval. Defaults to data/chat_seed_simple when present, otherwise the checkpoint training data dir.",
+    )
+    parser.add_argument(
+        "--normalize-chat-input",
+        action=argparse.BooleanOptionalAction,
+        default=default_normalize_chat_input,
+        help="Lightly normalize short chat input before interactive generation and retrieval lookup.",
     )
     parser.add_argument(
         "--show-meta",
@@ -496,6 +567,9 @@ def run_cli(
     default_repetition_penalty: float = 1.0,
     default_max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     default_show_prompt_output: bool = True,
+    default_max_history_turns: int | None = None,
+    default_retrieval_examples: int = 0,
+    default_normalize_chat_input: bool = False,
 ) -> int:
     args = parse_args(
         prog=prog,
@@ -511,6 +585,9 @@ def run_cli(
         default_repetition_penalty=default_repetition_penalty,
         default_max_new_tokens=default_max_new_tokens,
         default_show_prompt_output=default_show_prompt_output,
+        default_max_history_turns=default_max_history_turns,
+        default_retrieval_examples=default_retrieval_examples,
+        default_normalize_chat_input=default_normalize_chat_input,
     )
     if args.check_update:
         maybe_notify_about_update(force=True, stream=sys.stdout)
@@ -525,6 +602,7 @@ def run_cli(
     device = choose_device(args.device)
     checkpoint_path = resolve_checkpoint(args, default_download_url=default_download_url)
     model, tokenizer, checkpoint = load_generator(checkpoint_path, device)
+    args.retrieval_corpus_dir = resolve_retrieval_corpus_dir(args, checkpoint)
 
     if args.show_meta:
         from original_llm.generate import print_meta
@@ -535,10 +613,33 @@ def run_cli(
         return 0
 
     prompt = args.prompt or "むかしむかし"
+    effective_prompt = prompt
+    direct_reply: str | None = None
+    if args.user_label is not None and args.reply_label is not None:
+        pending_user_input = extract_pending_chat_user_input(
+            prompt,
+            args.user_label,
+            args.reply_label,
+        )
+        if pending_user_input is not None:
+            prepared_user_input = prepare_chat_user_input(pending_user_input, args)
+            direct_reply = select_direct_chat_reply(prepared_user_input, args)
+            if direct_reply is None:
+                effective_prompt = prepend_chat_retrieval_examples(
+                    prompt=prompt,
+                    user_input=prepared_user_input,
+                    args=args,
+                    tokenizer=tokenizer,
+                    context_length=model.config.context_length,
+                )
+            else:
+                generated = f"{prompt}{direct_reply}"
+                print(generated)
+                return 0
     generated = generate_text(
         model=model,
         tokenizer=tokenizer,
-        prompt=prompt,
+        prompt=effective_prompt,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         top_k=args.top_k,
@@ -550,6 +651,8 @@ def run_cli(
         device=device,
         stop_sequences=chat_stop_sequences(args.user_label, args.reply_label),
     )
+    if effective_prompt != prompt:
+        generated = f"{prompt}{generated_suffix(effective_prompt, generated)}"
     print(generated)
     return 0
 
@@ -596,8 +699,11 @@ def main_chat() -> int:
             Defaults:
               interactive=True
               carry-context=True
+              max-history-turns={DEFAULT_CHAT_MAX_HISTORY_TURNS}
               user-label=私
               reply-label=相手
+              retrieval-examples={DEFAULT_CHAT_RETRIEVAL_EXAMPLES}
+              normalize-chat-input=True
               temperature={DEFAULT_CHAT_TEMPERATURE}
               top-k={DEFAULT_CHAT_TOP_K}
               repetition-penalty={DEFAULT_CHAT_REPETITION_PENALTY}
@@ -615,6 +721,9 @@ def main_chat() -> int:
         default_repetition_penalty=DEFAULT_CHAT_REPETITION_PENALTY,
         default_max_new_tokens=DEFAULT_CHAT_MAX_NEW_TOKENS,
         default_show_prompt_output=False,
+        default_max_history_turns=DEFAULT_CHAT_MAX_HISTORY_TURNS,
+        default_retrieval_examples=DEFAULT_CHAT_RETRIEVAL_EXAMPLES,
+        default_normalize_chat_input=True,
     )
 
 

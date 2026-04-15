@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>512x8 ネットワーク構造メモ</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f7;
+      --paper: #ffffff;
+      --ink: #1f2430;
+      --muted: #5a6372;
+      --line: #d6dbe3;
+      --accent: #1a7f64;
+      --accent-soft: #e7f6f1;
+      --accent-2: #1769aa;
+      --accent-2-soft: #eaf3fb;
+      --warn: #915b00;
+      --warn-soft: #fff3dc;
+      --shadow: 0 10px 28px rgba(31, 36, 48, 0.08);
+      --radius: 8px;
+      --max: 1100px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+
+    main {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 12px;
+    }
+
+    h2 {
+      font-size: 1.35rem;
+      margin-bottom: 12px;
+    }
+
+    h3 {
+      font-size: 1.05rem;
+      margin-bottom: 10px;
+    }
+
+    p {
+      margin: 0;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+      background: #f0f3f7;
+      padding: 0.12rem 0.34rem;
+      border-radius: 6px;
+    }
+
+    .hero,
+    .section,
+    .diagram,
+    .note {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 28px;
+      margin-bottom: 20px;
+    }
+
+    .lead {
+      color: var(--muted);
+      max-width: 70ch;
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 22px;
+    }
+
+    .meta-item {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fafbfc;
+    }
+
+    .meta-label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .meta-value {
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+
+    .stack {
+      display: grid;
+      gap: 20px;
+    }
+
+    .section {
+      padding: 24px;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 999px;
+      font-size: 0.92rem;
+      font-weight: 600;
+      border: 1px solid transparent;
+    }
+
+    .tag-accent {
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-color: #c6e9dd;
+    }
+
+    .tag-blue {
+      color: var(--accent-2);
+      background: var(--accent-2-soft);
+      border-color: #cfe3f7;
+    }
+
+    .tag-warn {
+      color: var(--warn);
+      background: var(--warn-soft);
+      border-color: #f0d8a7;
+    }
+
+    .diagram {
+      padding: 20px;
+      margin-top: 16px;
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+    }
+
+    .box {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      background: #fbfcfd;
+    }
+
+    .box strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .box small {
+      color: var(--muted);
+    }
+
+    .box-embed {
+      background: #f9fcff;
+      border-color: #cfe3f7;
+    }
+
+    .box-block {
+      background: #f6fbf9;
+      border-color: #c6e9dd;
+    }
+
+    .box-output {
+      background: #fffaf0;
+      border-color: #f0d8a7;
+    }
+
+    .arrow {
+      text-align: center;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .mini-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+      background: #fafbfc;
+    }
+
+    .mini-card p + p,
+    .mini-card ul,
+    .section p + p {
+      margin-top: 10px;
+    }
+
+    ul {
+      margin: 10px 0 0;
+      padding-left: 18px;
+    }
+
+    li + li {
+      margin-top: 6px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 0.96rem;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 700;
+      background: #fafbfc;
+    }
+
+    .note {
+      padding: 16px 18px;
+      margin-top: 16px;
+      background: #fcfcfd;
+    }
+
+    .foot {
+      color: var(--muted);
+      font-size: 0.92rem;
+      margin-top: 14px;
+    }
+
+    @media (max-width: 640px) {
+      main {
+        padding: 20px 14px 48px;
+      }
+
+      .hero,
+      .section,
+      .diagram {
+        padding: 18px;
+      }
+
+      h1 {
+        font-size: 1.7rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>今メインで使っている 512x8 ネットワークの構造</h1>
+      <p class="lead">
+        現在のメイン会話モデルは <code>checkpoints/dazai-friend-peers-512x8-v1/best.pt</code> を優先して使う構成で、
+        実体は <strong>decoder-only Transformer</strong> です。ここでは
+        <code>512x8</code> が何を意味するか、1 ブロックの中で何が起きているか、入出力の形がどう流れるかを、
+        実装とチェックポイントのメタ情報に沿って整理します。
+      </p>
+      <div class="meta">
+        <div class="meta-item">
+          <span class="meta-label">モデル名</span>
+          <div class="meta-value">dazai-friend-peers-512x8-v1</div>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">総パラメータ数</span>
+          <div class="meta-value">27,534,848</div>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">語彙サイズ</span>
+          <div class="meta-value">4,265 文字</div>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">文脈長</span>
+          <div class="meta-value">256 tokens</div>
+        </div>
+      </div>
+      <div class="tag-row">
+        <span class="tag tag-accent">8 層の Transformer Block</span>
+        <span class="tag tag-blue">隠れ次元 512</span>
+        <span class="tag tag-blue">8 heads x 64 次元</span>
+        <span class="tag tag-accent">FFN 2048</span>
+        <span class="tag tag-warn">dropout 0.1</span>
+      </div>
+    </section>
+
+    <div class="stack">
+      <section class="section">
+        <h2>1. まず 512x8 の意味</h2>
+        <p>
+          このリポジトリでの <code>512x8</code> は、基本的に
+          <strong>幅 512 の表現を、8 段の Transformer Block で処理する</strong> という意味です。
+          つまり <code>512</code> は各 token が内部で持つベクトルの太さ、<code>x8</code> はその処理ブロックの段数です。
+        </p>
+        <div class="two-col">
+          <div class="mini-card">
+            <h3>512 = 幅</h3>
+            <p>
+              1 token は埋め込み後に <code>512</code> 次元のベクトルになります。
+              Attention でも FFN でも、基本の通り道はこの 512 次元です。
+            </p>
+          </div>
+          <div class="mini-card">
+            <h3>x8 = 深さ</h3>
+            <p>
+              同じ形の Transformer Block を <code>8 回</code> 連続で通します。
+              深くするほど表現力は上がりますが、そのぶん計算量も増えます。
+            </p>
+          </div>
+        </div>
+        <div class="note">
+          <strong>補足:</strong> ここでの <code>x8</code> は「8 heads」ではありません。
+          このモデルは結果として <code>n_head=8</code> でもありますが、名前の主眼は
+          <code>d_model=512</code> と <code>n_layer=8</code> にあります。
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>2. 全体フロー</h2>
+        <p>
+          入力は文字 tokenizer で token ID 列に変換されます。そこに token embedding と position embedding を足し、
+          8 層の block を通し、最後に各位置ごとの次 token 候補を出します。
+        </p>
+        <div class="diagram">
+          <div class="flow">
+            <div class="box box-embed">
+              <strong>入力 token IDs</strong>
+              <small>形: [B, T] / T は最大 256</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-embed">
+              <strong>Token Embedding + Position Embedding</strong>
+              <small>[B, T] → [B, T, 512]</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-block">
+              <strong>Dropout</strong>
+              <small>埋め込み和に dropout 0.1</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-block">
+              <strong>Transformer Block x 8</strong>
+              <small>各 block: LayerNorm → Causal Self-Attention → Residual → LayerNorm → FFN → Residual</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-block">
+              <strong>Final LayerNorm</strong>
+              <small>[B, T, 512]</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-output">
+              <strong>LM Head</strong>
+              <small>[B, T, 512] → [B, T, 4265]</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-output">
+              <strong>各位置の次 token の logits</strong>
+              <small>語彙 4265 個へのスコア</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>3. 1 ブロックの中で何が起きるか</h2>
+        <p>
+          8 層とも中身は同じです。違うのは重みだけで、処理の型は共通です。
+        </p>
+        <div class="two-col">
+          <div class="mini-card">
+            <h3>A. Causal Self-Attention</h3>
+            <ul>
+              <li>入力: <code>[B, T, 512]</code></li>
+              <li><code>qkv_proj</code> で <code>[B, T, 1536]</code> を作る</li>
+              <li><code>Q / K / V</code> に 3 分割し、さらに <code>8 heads</code> に分ける</li>
+              <li>各 head の次元は <code>64 = 512 / 8</code></li>
+              <li>未来 token を見ないように causal mask をかける</li>
+              <li>最後に head を結合して <code>[B, T, 512]</code> に戻す</li>
+            </ul>
+          </div>
+          <div class="mini-card">
+            <h3>B. Feed Forward Network</h3>
+            <ul>
+              <li>入力: <code>[B, T, 512]</code></li>
+              <li>まず <code>512 → 2048</code> に拡張</li>
+              <li><code>GELU</code> で非線形変換</li>
+              <li>次に <code>2048 → 512</code> に圧縮</li>
+              <li>最後に dropout 0.1</li>
+            </ul>
+          </div>
+        </div>
+        <div class="diagram">
+          <div class="flow">
+            <div class="box">
+              <strong>入力 x</strong>
+              <small>[B, T, 512]</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box">
+              <strong>LayerNorm</strong>
+              <small>attention の前で正規化</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-block">
+              <strong>Causal Self-Attention</strong>
+              <small>未来を見ずに、過去と現在の token から文脈を集める</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box">
+              <strong>Residual Add</strong>
+              <small>元の x に attention 出力を足す</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box">
+              <strong>LayerNorm</strong>
+              <small>FFN の前で再度正規化</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box box-block">
+              <strong>FFN: 512 → 2048 → 512</strong>
+              <small>各 token を位置ごとに太く計算する</small>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="box">
+              <strong>Residual Add</strong>
+              <small>attention 後の表現に FFN 出力を足す</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>4. 形を数で見る</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>項目</th>
+              <th>値</th>
+              <th>意味</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>vocab_size</code></td>
+              <td>4265</td>
+              <td>文字 tokenizer の語彙数</td>
+            </tr>
+            <tr>
+              <td><code>context_length</code></td>
+              <td>256</td>
+              <td>一度に見られる最大 token 数</td>
+            </tr>
+            <tr>
+              <td><code>d_model</code></td>
+              <td>512</td>
+              <td>各 token の内部表現の幅</td>
+            </tr>
+            <tr>
+              <td><code>n_layer</code></td>
+              <td>8</td>
+              <td>Transformer Block の段数</td>
+            </tr>
+            <tr>
+              <td><code>n_head</code></td>
+              <td>8</td>
+              <td>Attention の分割数</td>
+            </tr>
+            <tr>
+              <td><code>head_dim</code></td>
+              <td>64</td>
+              <td>各 head の次元。<code>512 / 8</code></td>
+            </tr>
+            <tr>
+              <td><code>ffn_hidden</code></td>
+              <td>2048</td>
+              <td>FFN の中間幅。<code>4 x d_model</code></td>
+            </tr>
+            <tr>
+              <td><code>dropout</code></td>
+              <td>0.1</td>
+              <td>学習時の過学習抑制</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="section">
+        <h2>5. パラメータ数の内訳</h2>
+        <p>
+          このモデルの総パラメータ数は <strong>27,534,848</strong> です。
+          大部分は 8 個の Transformer Block に入っています。
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>部品</th>
+              <th>個数</th>
+              <th>備考</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Token Embedding</td>
+              <td>2,183,680</td>
+              <td><code>4265 x 512</code></td>
+            </tr>
+            <tr>
+              <td>Position Embedding</td>
+              <td>131,072</td>
+              <td><code>256 x 512</code></td>
+            </tr>
+            <tr>
+              <td>1 block あたり</td>
+              <td>3,152,384</td>
+              <td>Attention + FFN + 2 つの LayerNorm</td>
+            </tr>
+            <tr>
+              <td>8 blocks 合計</td>
+              <td>25,219,072</td>
+              <td>全体の大半を占める</td>
+            </tr>
+            <tr>
+              <td>Final LayerNorm</td>
+              <td>1,024</td>
+              <td>出力直前の正規化</td>
+            </tr>
+            <tr>
+              <td>LM Head</td>
+              <td>追加なし</td>
+              <td>token embedding と重み共有</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="note">
+          <strong>重み共有:</strong>
+          <code>lm_head.weight = token_embedding.weight</code> なので、
+          出力層のために別の巨大な語彙行列をもう 1 枚持っていません。
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>6. このモデルが今のメインである理由</h2>
+        <p>
+          CLI 側では会話用の既定チェックポイントとして
+          <code>dazai-friend-peers-512x8*</code> を最優先で探すようになっています。
+          つまり「今メインで使っているモデル」は、運用上もこの 512x8 系です。
+        </p>
+        <p>
+          なお <code>dazai-friend-peers-512x8-v1</code> は
+          <code>dazai-peers-512x8-base-mix/best.pt</code> から resume して会話向けに微調整されていますが、
+          <strong>ネットワーク構造そのものは同じ 512x8 のまま</strong> です。
+        </p>
+      </section>
+
+      <section class="section">
+        <h2>7. 実装上の根拠</h2>
+        <ul>
+          <li><code>src/original_llm/model.py</code>: decoder-only Transformer 本体</li>
+          <li><code>src/original_llm/config.py</code>: <code>ModelConfig</code> の定義</li>
+          <li><code>src/original_llm/cli.py</code>: 会話用既定 checkpoint の優先順</li>
+          <li><code>checkpoints/dazai-friend-peers-512x8-v1/best.pt</code>: 実際の <code>model_config</code></li>
+        </ul>
+        <p class="foot">
+          このページの数値は、上の実装と checkpoint metadata を読み取って整理したものです。
+        </p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
