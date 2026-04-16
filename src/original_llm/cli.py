@@ -46,8 +46,8 @@ DEFAULT_CHAT_TOP_K = 8
 DEFAULT_CHAT_REPETITION_PENALTY = 1.1
 DEFAULT_CHAT_MAX_HISTORY_TURNS = 1
 DEFAULT_CHAT_RETRIEVAL_EXAMPLES = 1
-DEFAULT_CHAT_DOWNLOAD_URL = (
-    "https://github.com/natsu0529/original_LLM/releases/download/v0.1.0/best.pt"
+RELEASE_DOWNLOAD_BASE_URL = (
+    "https://github.com/natsu0529/original_LLM/releases/download"
 )
 RELEASE_VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 
@@ -78,6 +78,7 @@ def resolve_checkpoint(
     args: argparse.Namespace,
     *,
     default_download_url: str | None = None,
+    cache_name: str = DEFAULT_CHECKPOINT_NAME,
 ) -> Path:
     if args.checkpoint is not None:
         path = Path(args.checkpoint)
@@ -86,7 +87,7 @@ def resolve_checkpoint(
             raise SystemExit(1)
         return path
 
-    cached = CACHE_DIR / DEFAULT_CHECKPOINT_NAME
+    cached = CACHE_DIR / cache_name
     if cached.exists():
         return cached
 
@@ -176,13 +177,59 @@ def package_version_string() -> str:
         return "0.0.0"
 
 
+def normalize_release_version(version_text: str | None) -> str | None:
+    if version_text is None:
+        return None
+    normalized = version_text.strip()
+    if not RELEASE_VERSION_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
+def checkpoint_cache_name(
+    checkpoint_name: str = DEFAULT_CHECKPOINT_NAME,
+    *,
+    version_text: str | None = None,
+) -> str:
+    normalized_version = normalize_release_version(version_text)
+    if normalized_version is None:
+        return checkpoint_name
+
+    checkpoint_path = Path(checkpoint_name)
+    suffix = "".join(checkpoint_path.suffixes)
+    stem = (
+        checkpoint_path.name[: -len(suffix)]
+        if suffix
+        else checkpoint_path.name
+    )
+    return f"{stem}-v{normalized_version}{suffix}"
+
+
+def release_asset_download_url(
+    version_text: str | None,
+    *,
+    asset_name: str = DEFAULT_CHECKPOINT_NAME,
+) -> str | None:
+    normalized_version = normalize_release_version(version_text)
+    if normalized_version is None:
+        return None
+    return f"{RELEASE_DOWNLOAD_BASE_URL}/v{normalized_version}/{asset_name}"
+
+
+def default_chat_download_url(version_text: str | None = None) -> str | None:
+    return release_asset_download_url(
+        version_text or package_version_string(),
+        asset_name=DEFAULT_CHECKPOINT_NAME,
+    )
+
+
 def update_check_cache_path() -> Path:
     return CACHE_DIR / UPDATE_CHECK_CACHE_NAME
 
 
 def version_parts(version_text: str) -> tuple[int, ...] | None:
-    normalized = version_text.strip()
-    if not RELEASE_VERSION_RE.fullmatch(normalized):
+    normalized = normalize_release_version(version_text)
+    if normalized is None:
         return None
     parts = tuple(int(part) for part in normalized.split("."))
     trimmed = list(parts)
@@ -558,6 +605,7 @@ def run_cli(
     epilog: str | None = None,
     default_checkpoint: str | None = None,
     default_download_url: str | None = None,
+    default_cache_name: str = DEFAULT_CHECKPOINT_NAME,
     default_interactive: bool = False,
     default_carry_context: bool = False,
     default_user_label: str | None = None,
@@ -600,7 +648,11 @@ def run_cli(
     validate_args(args)
     set_seed(args.seed)
     device = choose_device(args.device)
-    checkpoint_path = resolve_checkpoint(args, default_download_url=default_download_url)
+    checkpoint_path = resolve_checkpoint(
+        args,
+        default_download_url=default_download_url,
+        cache_name=default_cache_name,
+    )
     model, tokenizer, checkpoint = load_generator(checkpoint_path, device)
     args.retrieval_corpus_dir = resolve_retrieval_corpus_dir(args, checkpoint)
 
@@ -674,12 +726,13 @@ def main() -> int:
 
 def main_chat() -> int:
     chat_checkpoint = preferred_chat_checkpoint()
+    installed_version = package_version_string()
     return run_cli(
         prog="dazai-chat",
         description=(
             "Chat with the current Dazai-style checkpoint using conversation defaults.\n"
             "If no local checkpoint is found, the first run downloads one into "
-            "~/.cache/original-llm/best.pt ."
+            "~/.cache/original-llm/ using the installed package version."
         ),
         epilog=textwrap.dedent(
             f"""
@@ -711,7 +764,10 @@ def main_chat() -> int:
             """
         ).strip(),
         default_checkpoint=str(chat_checkpoint) if chat_checkpoint is not None else None,
-        default_download_url=DEFAULT_CHAT_DOWNLOAD_URL,
+        default_download_url=default_chat_download_url(installed_version),
+        default_cache_name=checkpoint_cache_name(
+            version_text=installed_version,
+        ),
         default_interactive=True,
         default_carry_context=True,
         default_user_label="私",

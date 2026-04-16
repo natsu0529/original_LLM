@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest import mock
 
 from original_llm.cli import (
+    checkpoint_cache_name,
     check_for_updates,
+    default_chat_download_url,
     is_newer_version,
     maybe_notify_about_update,
     save_update_check_cache,
@@ -19,6 +21,29 @@ class VersionComparisonTests(unittest.TestCase):
     def test_is_newer_version_handles_numeric_segments(self) -> None:
         self.assertTrue(is_newer_version("0.1.10", "0.1.2"))
         self.assertFalse(is_newer_version("0.1.0", "0.1.0"))
+
+
+class DownloadResolutionTests(unittest.TestCase):
+    def test_default_chat_download_url_uses_installed_version(self) -> None:
+        self.assertEqual(
+            default_chat_download_url("0.1.1"),
+            "https://github.com/natsu0529/original_LLM/releases/download/v0.1.1/best.pt",
+        )
+
+    def test_default_chat_download_url_rejects_non_release_versions(self) -> None:
+        self.assertIsNone(default_chat_download_url("0.1.1.dev1"))
+
+    def test_checkpoint_cache_name_is_versioned(self) -> None:
+        self.assertEqual(
+            checkpoint_cache_name(version_text="0.1.1"),
+            "best-v0.1.1.pt",
+        )
+
+    def test_checkpoint_cache_name_falls_back_without_release_version(self) -> None:
+        self.assertEqual(
+            checkpoint_cache_name(version_text="0.1.1.dev1"),
+            "best.pt",
+        )
 
 
 class UpdateCheckTests(unittest.TestCase):
