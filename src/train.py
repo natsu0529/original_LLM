@@ -10,7 +10,12 @@ from typing import Any
 import torch
 
 from original_llm.config import DataConfig, ModelConfig, RunConfig
-from original_llm.data import TokenDataset, Tokenizer, tokenizer_from_state_dict
+from original_llm.data import (
+    TokenDataset,
+    Tokenizer,
+    blocked_generation_token_ids,
+    tokenizer_from_state_dict,
+)
 from original_llm.model import DecoderOnlyTransformer, count_parameters
 
 
@@ -356,11 +361,15 @@ def generate_sample(
         raise ValueError("Tokenizer failed to encode fallback prompt")
 
     idx = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
+    blocked_token_ids = blocked_generation_token_ids(tokenizer)
 
     for _ in range(max_new_tokens):
         idx_cond = idx[:, -model.config.context_length :]
         logits, _ = model(idx_cond)
         next_token_logits = logits[:, -1, :]
+        for token_id in blocked_token_ids:
+            if 0 <= token_id < next_token_logits.size(-1):
+                next_token_logits[:, token_id] = float("-inf")
 
         if temperature <= 0:
             next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)

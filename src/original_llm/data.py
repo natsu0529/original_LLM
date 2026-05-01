@@ -184,6 +184,10 @@ class SentencePieceTokenizer:
     def vocab_size(self) -> int:
         return int(self.processor.get_piece_size())
 
+    @property
+    def unk_id(self) -> int:
+        return int(self.processor.unk_id())
+
     def encode(self, text: str) -> list[int]:
         return list(self.processor.encode(text, out_type=int))
 
@@ -302,6 +306,17 @@ class SentencePieceTokenizer:
 
 
 Tokenizer = ByteTokenizer | CharTokenizer | SentencePieceTokenizer
+
+
+def blocked_generation_token_ids(tokenizer: Tokenizer) -> tuple[int, ...]:
+    if isinstance(tokenizer, ByteTokenizer):
+        return ()
+    if isinstance(tokenizer, CharTokenizer):
+        return (tokenizer.unk_id,)
+    if isinstance(tokenizer, SentencePieceTokenizer):
+        unk_id = tokenizer.unk_id
+        return (unk_id,) if unk_id >= 0 else ()
+    return ()
 
 
 class TokenDataset:

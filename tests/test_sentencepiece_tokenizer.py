@@ -6,6 +6,7 @@ from original_llm.data import (
     ByteTokenizer,
     CharTokenizer,
     SentencePieceTokenizer,
+    blocked_generation_token_ids,
     build_reply_loss_mask,
     tokenizer_from_state_dict,
 )
@@ -44,6 +45,25 @@ class SentencePieceTokenizerTests(unittest.TestCase):
 
         self.assertEqual(restored.tokenizer_type, "sentencepiece")
         self.assertEqual(restored.decode(restored.encode(text)), text)
+
+    def test_generation_blocklist_contains_unknown_token(self) -> None:
+        char_tokenizer = CharTokenizer.build(CORPUS_TEXTS)
+        sentencepiece_tokenizer = SentencePieceTokenizer.build(
+            CORPUS_TEXTS,
+            vocab_size=128,
+            model_type="unigram",
+            character_coverage=1.0,
+        )
+
+        self.assertEqual(blocked_generation_token_ids(ByteTokenizer.build([])), ())
+        self.assertEqual(
+            blocked_generation_token_ids(char_tokenizer),
+            (char_tokenizer.unk_id,),
+        )
+        self.assertEqual(
+            blocked_generation_token_ids(sentencepiece_tokenizer),
+            (sentencepiece_tokenizer.unk_id,),
+        )
 
 
 class ReplyLossMaskTests(unittest.TestCase):

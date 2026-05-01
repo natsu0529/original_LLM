@@ -11,7 +11,11 @@ from pathlib import Path
 import torch
 
 from original_llm.config import CHAT_TURN_END_MARKER, ModelConfig
-from original_llm.data import Tokenizer, tokenizer_from_state_dict
+from original_llm.data import (
+    Tokenizer,
+    blocked_generation_token_ids,
+    tokenizer_from_state_dict,
+)
 from original_llm.model import DecoderOnlyTransformer, count_parameters
 
 
@@ -182,6 +186,20 @@ def apply_repetition_penalty(
             token_logits * penalty,
             token_logits / penalty,
         )
+    return adjusted_logits
+
+
+def suppress_token_ids(
+    next_token_logits: torch.Tensor,
+    token_ids: tuple[int, ...],
+) -> torch.Tensor:
+    if not token_ids:
+        return next_token_logits
+
+    adjusted_logits = next_token_logits.clone()
+    for token_id in token_ids:
+        if 0 <= token_id < adjusted_logits.size(-1):
+            adjusted_logits[:, token_id] = float("-inf")
     return adjusted_logits
 
 
@@ -767,6 +785,7 @@ def generate_text(
         raise ValueError("Tokenizer failed to encode fallback prompt")
 
     idx = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
+    blocked_token_ids = blocked_generation_token_ids(tokenizer)
     stop_args = argparse.Namespace(
         stop_at_period=stop_at_period,
         stop_at_blank_line=stop_at_blank_line,
@@ -785,6 +804,7 @@ def generate_text(
             recent_tokens,
             repetition_penalty,
         )
+        next_token_logits = suppress_token_ids(next_token_logits, blocked_token_ids)
 
         if temperature <= 0:
             next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
