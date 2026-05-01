@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 
-from original_llm.config import ModelConfig
+from original_llm.config import CHAT_TURN_END_MARKER, ModelConfig
 from original_llm.data import Tokenizer, tokenizer_from_state_dict
 from original_llm.model import DecoderOnlyTransformer, count_parameters
 
@@ -214,6 +214,52 @@ def role_prompt(label: str) -> str:
     return f"{label}: "
 
 
+def dedupe_texts(values: list[str]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        ordered.append(value)
+        seen.add(value)
+    return tuple(ordered)
+
+
+def turn_end_markers(
+    tokenizer: Tokenizer | None = None,
+) -> tuple[str, ...]:
+    markers = [CHAT_TURN_END_MARKER]
+    if tokenizer is not None:
+        decoded_marker = tokenizer.decode(
+            tokenizer.encode(CHAT_TURN_END_MARKER)
+        ).strip()
+        if decoded_marker:
+            markers.append(decoded_marker)
+    return dedupe_texts(markers)
+
+
+def is_turn_end_marker(
+    line: str,
+    tokenizer: Tokenizer | None = None,
+) -> bool:
+    return line.strip() in turn_end_markers(tokenizer)
+
+
+def strip_turn_end_marker(
+    text: str,
+    tokenizer: Tokenizer | None = None,
+) -> str:
+    stripped = text.strip()
+    marker_positions = [
+        position
+        for marker in turn_end_markers(tokenizer)
+        if (position := stripped.find(marker)) != -1
+    ]
+    if marker_positions:
+        stripped = stripped[: min(marker_positions)].rstrip()
+    return stripped
+
+
 def strip_role_label(
     line: str,
     label: str,
@@ -278,6 +324,10 @@ def parse_chat_turns(
         line = raw_line.strip()
         if not line:
             continue
+        if is_turn_end_marker(line):
+            if pending_user is not None:
+                return []
+            continue
         user_text = strip_role_label(line, user_label)
         if user_text is not None:
             if pending_user is not None:
@@ -288,7 +338,7 @@ def parse_chat_turns(
         if reply_text is not None:
             if pending_user is None:
                 return []
-            turns.append((pending_user, reply_text))
+            turns.append((pending_user, strip_turn_end_marker(reply_text)))
             pending_user = None
             continue
         return []
@@ -306,7 +356,10 @@ def format_chat_turns(
     lines: list[str] = []
     for user_text, reply_text in turns:
         lines.append(f"{role_prompt(user_label)}{user_text}".rstrip())
-        lines.append(f"{role_prompt(reply_label)}{reply_text}".rstrip())
+        lines.append(
+            f"{role_prompt(reply_label)}{strip_turn_end_marker(reply_text)}".rstrip()
+        )
+        lines.append(CHAT_TURN_END_MARKER)
     return "\n".join(lines).rstrip()
 
 
@@ -320,6 +373,9 @@ def extract_pending_chat_user_input(
     for raw_line in prompt.splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        if is_turn_end_marker(line):
+            pending_user = None
             continue
         user_text = strip_role_label(line, user_label)
         if user_text is not None:
@@ -587,10 +643,22 @@ def prepend_chat_retrieval_examples(
 def chat_stop_sequences(
     user_label: str | None,
     reply_label: str | None,
+    tokenizer: Tokenizer | None = None,
 ) -> tuple[str, ...]:
     if user_label is None or reply_label is None:
         return ()
-    return (f"\n{role_prefix(user_label)}", f"\n{role_prefix(reply_label)}")
+    sequences = [
+        f"\n{marker}"
+        for marker in turn_end_markers(tokenizer)
+    ]
+    sequences.extend(
+        [
+            *turn_end_markers(tokenizer),
+            f"\n{role_prefix(user_label)}",
+            f"\n{role_prefix(reply_label)}",
+        ]
+    )
+    return dedupe_texts(sequences)
 
 
 def contains_stop_sequence(text: str, stop_sequences: tuple[str, ...]) -> bool:
@@ -601,6 +669,7 @@ def extract_chat_reply(
     text: str,
     user_label: str,
     reply_label: str,
+    tokenizer: Tokenizer | None = None,
 ) -> str:
     reply = text.lstrip()
     for prefix in (role_prompt(reply_label), role_prefix(reply_label)):
@@ -609,14 +678,18 @@ def extract_chat_reply(
             break
 
     stop_positions: list[int] = []
-    for sequence in chat_stop_sequences(user_label, reply_label):
+    for sequence in chat_stop_sequences(
+        user_label,
+        reply_label,
+        tokenizer=tokenizer,
+    ):
         position = reply.find(sequence)
         if position != -1:
             stop_positions.append(position)
     if stop_positions:
         reply = reply[: min(stop_positions)]
 
-    return reply.strip()
+    return strip_turn_end_marker(reply, tokenizer=tokenizer)
 
 
 def append_chat_history(
@@ -629,10 +702,11 @@ def append_chat_history(
     context_length: int,
     max_turns: int | None = None,
 ) -> str:
-    turn = (
-        f"{role_prompt(user_label)}{user_input}\n"
-        f"{role_prompt(reply_label)}{reply_text}"
-    ).rstrip()
+    turn = format_chat_turns(
+        [(user_input, reply_text)],
+        user_label,
+        reply_label,
+    )
     if history:
         turn = f"{history}\n{turn}"
     if max_turns is not None:
@@ -729,7 +803,7 @@ def generate_text(
 
         idx = torch.cat((idx, next_token), dim=1)
         generated = tokenizer.decode(idx[0].tolist())
-        suffix = generated_suffix(prompt, generated)
+        suffix = generated_suffix(prompt, generated, tokenizer=tokenizer)
         if contains_stop_sequence(suffix, stop_sequences):
             break
         if should_stop_early(suffix, stop_args):
@@ -738,9 +812,17 @@ def generate_text(
     return tokenizer.decode(idx[0].tolist())
 
 
-def generated_suffix(prompt: str, generated: str) -> str:
-    if generated.startswith(prompt):
-        return generated[len(prompt) :]
+def generated_suffix(
+    prompt: str,
+    generated: str,
+    tokenizer: Tokenizer | None = None,
+) -> str:
+    prompt_variants = [prompt]
+    if tokenizer is not None:
+        prompt_variants.append(tokenizer.decode(tokenizer.encode(prompt)))
+    for prompt_variant in dedupe_texts(prompt_variants):
+        if generated.startswith(prompt_variant):
+            return generated[len(prompt_variant) :]
     return generated
 
 
@@ -921,15 +1003,20 @@ def interactive_loop(
             stop_at_blank_line=args.stop_at_blank_line,
             min_new_chars_before_stop=args.min_new_chars_before_stop,
             device=device,
-            stop_sequences=chat_stop_sequences(args.user_label, args.reply_label),
+            stop_sequences=chat_stop_sequences(
+                args.user_label,
+                args.reply_label,
+                tokenizer=tokenizer,
+            ),
         )
-        suffix = generated_suffix(prompt, generated)
+        suffix = generated_suffix(prompt, generated, tokenizer=tokenizer)
         reply_text = suffix
         if args.user_label is not None and args.reply_label is not None:
             reply_text = extract_chat_reply(
                 suffix,
                 user_label=args.user_label,
                 reply_label=args.reply_label,
+                tokenizer=tokenizer,
             )
         print()
         if show_prompt_output or args.user_label is None or args.reply_label is None:
@@ -987,7 +1074,11 @@ def main() -> int:
         stop_at_blank_line=args.stop_at_blank_line,
         min_new_chars_before_stop=args.min_new_chars_before_stop,
         device=device,
-        stop_sequences=chat_stop_sequences(args.user_label, args.reply_label),
+        stop_sequences=chat_stop_sequences(
+            args.user_label,
+            args.reply_label,
+            tokenizer=tokenizer,
+        ),
     )
     print(generated)
     return 0

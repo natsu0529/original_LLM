@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CHAT_TURN_END_MARKER = "<eot>"
 
 
 @dataclass(slots=True)
@@ -12,6 +13,9 @@ class DataConfig:
     data_dir: Path = REPO_ROOT / "data" / "raw" / "aozora" / "dazai" / "txt"
     manifest_path: Path = REPO_ROOT / "data" / "raw" / "aozora" / "dazai" / "manifest.jsonl"
     tokenizer_type: str = "char"
+    sentencepiece_vocab_size: int = 4096
+    sentencepiece_model_type: str = "unigram"
+    sentencepiece_character_coverage: float = 0.9995
     reply_loss_label: str | None = None
     train_split: float = 0.9
     context_length: int = 256

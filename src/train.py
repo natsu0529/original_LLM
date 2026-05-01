@@ -27,8 +27,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest-path", type=Path, default=DataConfig().manifest_path)
     parser.add_argument(
         "--tokenizer-type",
-        choices=["char", "byte"],
+        choices=["char", "byte", "sentencepiece"],
         default=DataConfig().tokenizer_type,
+    )
+    parser.add_argument(
+        "--sentencepiece-vocab-size",
+        type=int,
+        default=DataConfig().sentencepiece_vocab_size,
+    )
+    parser.add_argument(
+        "--sentencepiece-model-type",
+        choices=["unigram", "bpe"],
+        default=DataConfig().sentencepiece_model_type,
+    )
+    parser.add_argument(
+        "--sentencepiece-character-coverage",
+        type=float,
+        default=DataConfig().sentencepiece_character_coverage,
     )
     parser.add_argument("--reply-loss-label", type=str, default=DataConfig().reply_loss_label)
     parser.add_argument("--limit", type=int, default=None)
@@ -97,6 +112,9 @@ def build_data_config(args: argparse.Namespace) -> DataConfig:
         data_dir=args.data_dir,
         manifest_path=args.manifest_path,
         tokenizer_type=args.tokenizer_type,
+        sentencepiece_vocab_size=args.sentencepiece_vocab_size,
+        sentencepiece_model_type=args.sentencepiece_model_type,
+        sentencepiece_character_coverage=args.sentencepiece_character_coverage,
         reply_loss_label=args.reply_loss_label,
         train_split=args.train_split,
         context_length=args.context_length,
@@ -395,12 +413,20 @@ def main() -> int:
     run_config = RunConfig(run_name=args.run_name, output_root=args.out_dir)
     resume_checkpoint = load_checkpoint_metadata(args.resume)
     data_config = build_data_config(args)
+    requested_tokenizer_type = data_config.tokenizer_type
     resume_tokenizer = (
         tokenizer_from_state_dict(resume_checkpoint.get("tokenizer_state"))
         if resume_checkpoint is not None
         else None
     )
     if resume_tokenizer is not None:
+        if resume_tokenizer.tokenizer_type != requested_tokenizer_type:
+            raise ValueError(
+                "Cannot resume with a different tokenizer_type: "
+                f"requested={requested_tokenizer_type}, "
+                f"checkpoint={resume_tokenizer.tokenizer_type}. "
+                "Start a fresh run without --resume to switch tokenizers."
+            )
         data_config.tokenizer_type = resume_tokenizer.tokenizer_type
 
     dataset = TokenDataset(data_config, tokenizer=resume_tokenizer)

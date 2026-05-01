@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import random
 import re
@@ -10,6 +12,11 @@ from pathlib import Path
 import torch
 
 from original_llm.config import DataConfig
+
+try:
+    import sentencepiece as spm
+except ImportError:  # pragma: no cover
+    spm = None
 
 
 HEADER_GUIDE_RE = re.compile(
@@ -23,6 +30,7 @@ RUBY_PIPE_RE = re.compile(r"｜")
 MULTI_BLANK_RE = re.compile(r"\n{3,}")
 ROLE_LINE_RE = re.compile(r"^[^:\n]{1,32}:")
 IGNORE_INDEX = -100
+SENTENCEPIECE_USER_DEFINED_SYMBOLS = ("私: ", "相手: ", "<eot>")
 
 
 @dataclass(slots=True)
@@ -40,12 +48,40 @@ class SplitSummary:
     token_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class TokenSpan:
+    token_id: int
+    begin: int
+    end: int
+
+
+def require_sentencepiece() -> None:
+    if spm is None:
+        raise RuntimeError(
+            "sentencepiece is required for tokenizer_type='sentencepiece'. "
+            "Install dependencies with `uv sync` or `uv run` in this repo."
+        )
+
+
 class ByteTokenizer:
     tokenizer_type = "byte"
     vocab_size = 256
 
     def encode(self, text: str) -> list[int]:
         return list(text.encode("utf-8"))
+
+    def encode_with_offsets(self, text: str) -> list[TokenSpan]:
+        spans: list[TokenSpan] = []
+        for char_index, char in enumerate(text):
+            for value in char.encode("utf-8"):
+                spans.append(
+                    TokenSpan(
+                        token_id=value,
+                        begin=char_index,
+                        end=char_index + 1,
+                    )
+                )
+        return spans
 
     def decode(self, token_ids: list[int]) -> str:
         return bytes(token_ids).decode("utf-8", errors="ignore")
@@ -80,6 +116,18 @@ class CharTokenizer:
     def encode(self, text: str) -> list[int]:
         return [self.token_to_id.get(char, self.unk_id) for char in text]
 
+    def encode_with_offsets(self, text: str) -> list[TokenSpan]:
+        spans: list[TokenSpan] = []
+        for char_index, char in enumerate(text):
+            spans.append(
+                TokenSpan(
+                    token_id=self.token_to_id.get(char, self.unk_id),
+                    begin=char_index,
+                    end=char_index + 1,
+                )
+            )
+        return spans
+
     def decode(self, token_ids: list[int]) -> str:
         chars: list[str] = []
         for token_id in token_ids:
@@ -112,7 +160,148 @@ class CharTokenizer:
         return cls(id_to_token=id_to_token, unk_token=str(unk_token))
 
 
-Tokenizer = ByteTokenizer | CharTokenizer
+class SentencePieceTokenizer:
+    tokenizer_type = "sentencepiece"
+
+    def __init__(
+        self,
+        *,
+        processor: spm.SentencePieceProcessor,
+        model_proto: bytes,
+        model_type: str,
+        character_coverage: float,
+        requested_vocab_size: int,
+        user_defined_symbols: tuple[str, ...] = SENTENCEPIECE_USER_DEFINED_SYMBOLS,
+    ) -> None:
+        self.processor = processor
+        self.model_proto = model_proto
+        self.model_type = model_type
+        self.character_coverage = character_coverage
+        self.requested_vocab_size = requested_vocab_size
+        self.user_defined_symbols = user_defined_symbols
+
+    @property
+    def vocab_size(self) -> int:
+        return int(self.processor.get_piece_size())
+
+    def encode(self, text: str) -> list[int]:
+        return list(self.processor.encode(text, out_type=int))
+
+    def encode_with_offsets(self, text: str) -> list[TokenSpan]:
+        proto = self.processor.encode(text, out_type="immutable_proto")
+        return [
+            TokenSpan(token_id=piece.id, begin=piece.begin, end=piece.end)
+            for piece in proto.pieces
+        ]
+
+    def decode(self, token_ids: list[int]) -> str:
+        return str(self.processor.decode(token_ids))
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "tokenizer_type": self.tokenizer_type,
+            "model_proto_b64": base64.b64encode(self.model_proto).decode("ascii"),
+            "model_type": self.model_type,
+            "character_coverage": self.character_coverage,
+            "requested_vocab_size": self.requested_vocab_size,
+            "user_defined_symbols": list(self.user_defined_symbols),
+        }
+
+    @classmethod
+    def build(
+        cls,
+        texts: list[str],
+        *,
+        vocab_size: int,
+        model_type: str,
+        character_coverage: float,
+        user_defined_symbols: tuple[str, ...] = SENTENCEPIECE_USER_DEFINED_SYMBOLS,
+    ) -> SentencePieceTokenizer:
+        require_sentencepiece()
+        if vocab_size <= 0:
+            raise ValueError(
+                f"sentencepiece vocab_size must be positive, got {vocab_size}"
+            )
+        if not 0.0 < character_coverage <= 1.0:
+            raise ValueError(
+                "sentencepiece character_coverage must be in (0, 1], "
+                f"got {character_coverage}"
+            )
+
+        model = io.BytesIO()
+        spm.SentencePieceTrainer.train(
+            sentence_iterator=(text for text in texts if text),
+            model_writer=model,
+            vocab_size=vocab_size,
+            model_type=model_type,
+            character_coverage=character_coverage,
+            user_defined_symbols=list(user_defined_symbols),
+            normalization_rule_name="identity",
+            shuffle_input_sentence=False,
+            hard_vocab_limit=False,
+            split_by_whitespace=False,
+            add_dummy_prefix=False,
+            remove_extra_whitespaces=False,
+            bos_id=-1,
+            eos_id=-1,
+            pad_id=-1,
+            unk_id=0,
+            minloglevel=2,
+        )
+        return cls.from_model_proto(
+            model.getvalue(),
+            model_type=model_type,
+            character_coverage=character_coverage,
+            requested_vocab_size=vocab_size,
+            user_defined_symbols=user_defined_symbols,
+        )
+
+    @classmethod
+    def from_model_proto(
+        cls,
+        model_proto: bytes,
+        *,
+        model_type: str,
+        character_coverage: float,
+        requested_vocab_size: int,
+        user_defined_symbols: tuple[str, ...] = SENTENCEPIECE_USER_DEFINED_SYMBOLS,
+    ) -> SentencePieceTokenizer:
+        require_sentencepiece()
+        processor = spm.SentencePieceProcessor(model_proto=model_proto)
+        return cls(
+            processor=processor,
+            model_proto=model_proto,
+            model_type=model_type,
+            character_coverage=character_coverage,
+            requested_vocab_size=requested_vocab_size,
+            user_defined_symbols=user_defined_symbols,
+        )
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, object]) -> SentencePieceTokenizer:
+        model_proto_b64 = state.get("model_proto_b64")
+        if not isinstance(model_proto_b64, str) or not model_proto_b64:
+            raise ValueError("Invalid sentencepiece tokenizer state")
+
+        raw_symbols = state.get(
+            "user_defined_symbols",
+            list(SENTENCEPIECE_USER_DEFINED_SYMBOLS),
+        )
+        if not isinstance(raw_symbols, list) or not all(
+            isinstance(value, str) for value in raw_symbols
+        ):
+            raise ValueError("Invalid sentencepiece tokenizer user_defined_symbols")
+
+        return cls.from_model_proto(
+            base64.b64decode(model_proto_b64.encode("ascii")),
+            model_type=str(state.get("model_type", "unigram")),
+            character_coverage=float(state.get("character_coverage", 0.9995)),
+            requested_vocab_size=int(state.get("requested_vocab_size", 0)),
+            user_defined_symbols=tuple(raw_symbols),
+        )
+
+
+Tokenizer = ByteTokenizer | CharTokenizer | SentencePieceTokenizer
 
 
 class TokenDataset:
@@ -133,6 +322,9 @@ class TokenDataset:
         self.tokenizer = tokenizer or build_tokenizer(
             tokenizer_type=config.tokenizer_type,
             texts=[work.cleaned_text for work in self.works],
+            sentencepiece_vocab_size=config.sentencepiece_vocab_size,
+            sentencepiece_model_type=config.sentencepiece_model_type,
+            sentencepiece_character_coverage=config.sentencepiece_character_coverage,
         )
         self.vocab_size = self.tokenizer.vocab_size
         self.train_works, self.valid_works = split_works(self.works, config.train_split)
@@ -226,11 +418,25 @@ class TokenDataset:
         return self.tokenizer.decode(token_ids)
 
 
-def build_tokenizer(tokenizer_type: str, texts: list[str]) -> Tokenizer:
+def build_tokenizer(
+    tokenizer_type: str,
+    texts: list[str],
+    *,
+    sentencepiece_vocab_size: int,
+    sentencepiece_model_type: str,
+    sentencepiece_character_coverage: float,
+) -> Tokenizer:
     if tokenizer_type == "char":
         return CharTokenizer.build(texts)
     if tokenizer_type == "byte":
         return ByteTokenizer.build(texts)
+    if tokenizer_type == "sentencepiece":
+        return SentencePieceTokenizer.build(
+            texts,
+            vocab_size=sentencepiece_vocab_size,
+            model_type=sentencepiece_model_type,
+            character_coverage=sentencepiece_character_coverage,
+        )
     raise ValueError(f"Unsupported tokenizer_type: {tokenizer_type}")
 
 
@@ -243,6 +449,8 @@ def tokenizer_from_state_dict(state: dict[str, object] | None) -> Tokenizer:
         return CharTokenizer.from_state_dict(state)
     if tokenizer_type == "byte":
         return ByteTokenizer.from_state_dict(state)
+    if tokenizer_type == "sentencepiece":
+        return SentencePieceTokenizer.from_state_dict(state)
     raise ValueError(f"Unsupported tokenizer_type in checkpoint: {tokenizer_type}")
 
 
@@ -264,9 +472,27 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tokenizer-type",
-        choices=["char", "byte"],
+        choices=["char", "byte", "sentencepiece"],
         default=DataConfig().tokenizer_type,
         help="Tokenization mode used for training.",
+    )
+    parser.add_argument(
+        "--sentencepiece-vocab-size",
+        type=int,
+        default=DataConfig().sentencepiece_vocab_size,
+        help="Vocabulary size used when tokenizer_type=sentencepiece.",
+    )
+    parser.add_argument(
+        "--sentencepiece-model-type",
+        choices=["unigram", "bpe"],
+        default=DataConfig().sentencepiece_model_type,
+        help="SentencePiece model type used when tokenizer_type=sentencepiece.",
+    )
+    parser.add_argument(
+        "--sentencepiece-character-coverage",
+        type=float,
+        default=DataConfig().sentencepiece_character_coverage,
+        help="SentencePiece character coverage used when tokenizer_type=sentencepiece.",
     )
     parser.add_argument(
         "--reply-loss-label",
@@ -418,41 +644,64 @@ def build_reply_loss_mask(
     tokenizer: Tokenizer,
     reply_loss_label: str,
 ) -> list[bool]:
-    reply_prefix = f"{reply_loss_label}:"
-    token_ids = tokenizer.encode(text)
+    token_spans = tokenizer.encode_with_offsets(text)
+    reply_spans = reply_loss_char_spans(text, reply_loss_label)
     mask: list[bool] = []
+    reply_index = 0
+
+    for token in token_spans:
+        while (
+            reply_index < len(reply_spans)
+            and reply_spans[reply_index][1] <= token.begin
+        ):
+            reply_index += 1
+
+        active = False
+        if (
+            token.begin < token.end
+            and reply_index < len(reply_spans)
+        ):
+            reply_begin, reply_end = reply_spans[reply_index]
+            active = reply_begin <= token.begin and token.end <= reply_end
+        mask.append(active)
+
+    if len(mask) != len(token_spans):
+        raise ValueError(
+            "Reply loss mask length mismatch: "
+            f"tokens={len(token_spans)} mask={len(mask)}"
+        )
+    return mask
+
+
+def reply_loss_char_spans(
+    text: str,
+    reply_loss_label: str,
+) -> list[tuple[int, int]]:
+    reply_prefix = f"{reply_loss_label}:"
     reply_active = False
+    char_index = 0
+    spans: list[tuple[int, int]] = []
 
     for line in text.splitlines(keepends=True):
         newline_count = len(line) - len(line.rstrip("\n"))
         line_body = line[:-newline_count] if newline_count > 0 else line
+        line_end = char_index + len(line)
 
         if line_body.startswith(reply_prefix):
-            prefix_text = reply_prefix
-            remainder = line_body[len(reply_prefix) :]
-            if remainder.startswith(" "):
-                prefix_text += " "
-                remainder = remainder[1:]
-            mask.extend([False] * len(tokenizer.encode(prefix_text)))
-            mask.extend([True] * len(tokenizer.encode(remainder)))
-            if newline_count > 0:
-                mask.extend([True] * len(tokenizer.encode("\n" * newline_count)))
+            prefix_length = len(reply_prefix)
+            if line_body[len(reply_prefix) :].startswith(" "):
+                prefix_length += 1
+            if char_index + prefix_length < line_end:
+                spans.append((char_index + prefix_length, line_end))
             reply_active = True
-            continue
-
-        if line_body and ROLE_LINE_RE.match(line_body):
-            mask.extend([False] * len(tokenizer.encode(line)))
+        elif line_body and ROLE_LINE_RE.match(line_body):
             reply_active = False
-            continue
+        elif reply_active and char_index < line_end:
+            spans.append((char_index, line_end))
 
-        mask.extend([reply_active] * len(tokenizer.encode(line)))
+        char_index = line_end
 
-    if len(mask) != len(token_ids):
-        raise ValueError(
-            "Reply loss mask length mismatch: "
-            f"tokens={len(token_ids)} mask={len(mask)}"
-        )
-    return mask
+    return spans
 
 
 def compute_valid_starts(
@@ -500,6 +749,9 @@ def build_config_from_args(args: argparse.Namespace) -> DataConfig:
         data_dir=args.data_dir,
         manifest_path=args.manifest_path,
         tokenizer_type=args.tokenizer_type,
+        sentencepiece_vocab_size=args.sentencepiece_vocab_size,
+        sentencepiece_model_type=args.sentencepiece_model_type,
+        sentencepiece_character_coverage=args.sentencepiece_character_coverage,
         reply_loss_label=args.reply_loss_label,
         train_split=args.train_split,
         context_length=args.context_length,

@@ -21,6 +21,7 @@ from original_llm.generate import (
     DEFAULT_MIN_NEW_CHARS_BEFORE_STOP,
     chat_stop_sequences,
     choose_device,
+    extract_chat_reply,
     extract_pending_chat_user_input,
     generate_text,
     generated_suffix,
@@ -44,7 +45,7 @@ DEFAULT_CHAT_MAX_NEW_TOKENS = 48
 DEFAULT_CHAT_TEMPERATURE = 0.2
 DEFAULT_CHAT_TOP_K = 8
 DEFAULT_CHAT_REPETITION_PENALTY = 1.1
-DEFAULT_CHAT_MAX_HISTORY_TURNS = 1
+DEFAULT_CHAT_MAX_HISTORY_TURNS = 2
 DEFAULT_CHAT_RETRIEVAL_EXAMPLES = 1
 RELEASE_DOWNLOAD_BASE_URL = (
     "https://github.com/natsu0529/original_LLM/releases/download"
@@ -107,6 +108,8 @@ def resolve_checkpoint(
 def preferred_chat_checkpoint() -> Path | None:
     checkpoint_root = REPO_ROOT / "checkpoints"
     patterns = (
+        "dazai-friend-real-persona-casual*/best.pt",
+        "dazai-friend-real-persona*/best.pt",
         "dazai-friend-peers-512x8*/best.pt",
         "dazai-friend-reply*/best.pt",
         "dazai-friend-auto*/best.pt",
@@ -147,14 +150,47 @@ def resolve_retrieval_corpus_dir(
     if resolved is not None:
         return str(resolved)
 
+    checkpoint_args = checkpoint.get("args", {})
+    checkpoint_reply_loss_label = checkpoint_args.get("reply_loss_label")
+    checkpoint_data_dir = checkpoint_args.get("data_dir")
+    if isinstance(checkpoint_data_dir, str) and checkpoint_data_dir.strip():
+        resolved = resolve_existing_dir(checkpoint_data_dir)
+        if resolved is not None and (
+            (isinstance(checkpoint_reply_loss_label, str) and checkpoint_reply_loss_label.strip())
+            or "chat_seed" in resolved.name
+        ):
+            return str(resolved)
+
+    preferred_real_persona_dir = resolve_existing_dir(
+        REPO_ROOT / "data" / "chat_seed_friend_casual_mix_v1"
+    )
+    if preferred_real_persona_dir is not None:
+        return str(preferred_real_persona_dir)
+
+    preferred_real_persona_dir = resolve_existing_dir(
+        REPO_ROOT / "data" / "chat_seed_real_persona_casual_v1"
+    )
+    if preferred_real_persona_dir is not None:
+        return str(preferred_real_persona_dir)
+
+    preferred_real_persona_dir = resolve_existing_dir(
+        REPO_ROOT / "data" / "chat_seed_real_persona_v1"
+    )
+    if preferred_real_persona_dir is not None:
+        return str(preferred_real_persona_dir)
+
+    preferred_refined_dir = resolve_existing_dir(
+        REPO_ROOT / "data" / "chat_seed_refined_v1"
+    )
+    if preferred_refined_dir is not None:
+        return str(preferred_refined_dir)
+
     preferred_simple_dir = resolve_existing_dir(REPO_ROOT / "data" / "chat_seed_simple")
     if preferred_simple_dir is not None:
         return str(preferred_simple_dir)
 
-    checkpoint_args = checkpoint.get("args", {})
-    data_dir = checkpoint_args.get("data_dir")
-    if isinstance(data_dir, str) and data_dir.strip():
-        resolved = resolve_existing_dir(data_dir)
+    if isinstance(checkpoint_data_dir, str) and checkpoint_data_dir.strip():
+        resolved = resolve_existing_dir(checkpoint_data_dir)
         if resolved is not None:
             return str(resolved)
     return None
@@ -557,7 +593,7 @@ def parse_args(
         "--retrieval-corpus-dir",
         type=str,
         default=None,
-        help="Directory of .txt chat seed files used for retrieval. Defaults to data/chat_seed_simple when present, otherwise the checkpoint training data dir.",
+        help="Directory of .txt chat seed files used for retrieval. Defaults to the checkpoint chat data dir when available, otherwise data/chat_seed_real_persona_v1, data/chat_seed_refined_v1, data/chat_seed_simple, then finally the checkpoint training data dir.",
     )
     parser.add_argument(
         "--normalize-chat-input",
@@ -667,6 +703,7 @@ def run_cli(
     prompt = args.prompt or "むかしむかし"
     effective_prompt = prompt
     direct_reply: str | None = None
+    pending_user_input: str | None = None
     if args.user_label is not None and args.reply_label is not None:
         pending_user_input = extract_pending_chat_user_input(
             prompt,
@@ -701,10 +738,29 @@ def run_cli(
         stop_at_blank_line=args.stop_at_blank_line,
         min_new_chars_before_stop=args.min_new_chars_before_stop,
         device=device,
-        stop_sequences=chat_stop_sequences(args.user_label, args.reply_label),
+        stop_sequences=chat_stop_sequences(
+            args.user_label,
+            args.reply_label,
+            tokenizer=tokenizer,
+        ),
     )
-    if effective_prompt != prompt:
-        generated = f"{prompt}{generated_suffix(effective_prompt, generated)}"
+    continuation = generated_suffix(
+        effective_prompt,
+        generated,
+        tokenizer=tokenizer,
+    )
+    if (
+        pending_user_input is not None
+        and args.user_label is not None
+        and args.reply_label is not None
+    ):
+        continuation = extract_chat_reply(
+            continuation,
+            args.user_label,
+            args.reply_label,
+            tokenizer=tokenizer,
+        )
+    generated = f"{prompt}{continuation}"
     print(generated)
     return 0
 

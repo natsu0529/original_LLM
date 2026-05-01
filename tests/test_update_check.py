@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import argparse
 import tempfile
 import time
 import unittest
@@ -13,6 +14,7 @@ from original_llm.cli import (
     default_chat_download_url,
     is_newer_version,
     maybe_notify_about_update,
+    resolve_retrieval_corpus_dir,
     save_update_check_cache,
 )
 
@@ -88,6 +90,47 @@ class UpdateCheckTests(unittest.TestCase):
             self.assertIn("A newer version of original-llm is available: 0.1.1", first_stream.getvalue())
             self.assertIn("uv tool upgrade original-llm", first_stream.getvalue())
             self.assertEqual(second_stream.getvalue(), "")
+
+
+class RetrievalResolutionTests(unittest.TestCase):
+    def test_resolve_retrieval_prefers_chat_checkpoint_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            chat_dir = Path(tmp_dir) / "chat_seed_real_persona_v1"
+            chat_dir.mkdir()
+            args = argparse.Namespace(retrieval_corpus_dir=None)
+
+            resolved = resolve_retrieval_corpus_dir(
+                args,
+                checkpoint={
+                    "args": {
+                        "data_dir": str(chat_dir),
+                        "reply_loss_label": "相手",
+                    }
+                },
+            )
+
+            self.assertEqual(resolved, str(chat_dir.resolve()))
+
+    def test_resolve_retrieval_prefers_bundled_chat_seed_over_raw_checkpoint_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            raw_dir = Path(tmp_dir) / "txt"
+            raw_dir.mkdir()
+            args = argparse.Namespace(retrieval_corpus_dir=None)
+
+            resolved = resolve_retrieval_corpus_dir(
+                args,
+                checkpoint={
+                    "args": {
+                        "data_dir": str(raw_dir),
+                        "reply_loss_label": None,
+                    }
+                },
+            )
+
+            self.assertEqual(
+                resolved,
+                str((Path(__file__).resolve().parents[1] / "data" / "chat_seed_friend_casual_mix_v1").resolve()),
+            )
 
 
 if __name__ == "__main__":
