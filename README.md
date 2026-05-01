@@ -266,7 +266,7 @@ uv run dazai-chat --help
 - `--max-history-turns 1`
 - `--user-label 私`
 - `--reply-label 相手`
-- `--retrieval-examples 1`
+- `--retrieval-examples 0`
 - `--normalize-chat-input`
 - `--temperature 0.2`
 - `--top-k 8`

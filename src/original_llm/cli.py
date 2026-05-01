@@ -46,7 +46,7 @@ DEFAULT_CHAT_TEMPERATURE = 0.2
 DEFAULT_CHAT_TOP_K = 8
 DEFAULT_CHAT_REPETITION_PENALTY = 1.1
 DEFAULT_CHAT_MAX_HISTORY_TURNS = 2
-DEFAULT_CHAT_RETRIEVAL_EXAMPLES = 1
+DEFAULT_CHAT_RETRIEVAL_EXAMPLES = 0
 RELEASE_DOWNLOAD_BASE_URL = (
     "https://github.com/natsu0529/original_LLM/releases/download"
 )
@@ -108,6 +108,13 @@ def resolve_checkpoint(
 def preferred_chat_checkpoint() -> Path | None:
     checkpoint_root = REPO_ROOT / "checkpoints"
     patterns = (
+        "dazai-friend-topic-clean-spm-*/best.pt",
+        "dazai-friend-clean-actions-dream-spm-*/best.pt",
+        "dazai-friend-clean-actions-spm-*/best.pt",
+        "dazai-friend-clean-spm-*/best.pt",
+        "dazai-friend-support-animals-spm-*/best.pt",
+        "dazai-friend-support-spm-*/best.pt",
+        "dazai-friend-casual-spm-*/best.pt",
         "dazai-friend-real-persona-casual*/best.pt",
         "dazai-friend-real-persona*/best.pt",
         "dazai-friend-peers-512x8*/best.pt",
