@@ -67,6 +67,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"], default="auto")
     parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--min-learning-rate", type=float, default=None,
+                        help="Floor for cosine LR schedule (default: 0.1 * learning_rate).")
+    parser.add_argument("--warmup-steps", type=int, default=0,
+                        help="Linear warmup steps from 0 to learning_rate. 0 disables warmup.")
+    parser.add_argument(
+        "--lr-schedule",
+        choices=["constant", "cosine"],
+        default="constant",
+        help="Optional LR schedule applied each step.",
+    )
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--eval-every", type=int, default=50)
@@ -202,6 +212,33 @@ def apply_optimizer_overrides(
     for param_group in optimizer.param_groups:
         param_group["lr"] = learning_rate
         param_group["weight_decay"] = weight_decay
+
+
+def compute_lr(
+    step: int,
+    *,
+    base_lr: float,
+    min_lr: float,
+    schedule: str,
+    warmup_steps: int,
+    max_steps: int,
+) -> float:
+    """Return the LR to use at this 1-indexed training step."""
+    if warmup_steps > 0 and step <= warmup_steps:
+        return base_lr * step / max(1, warmup_steps)
+    if schedule != "cosine":
+        return base_lr
+    decay_total = max(1, max_steps - warmup_steps)
+    progress = (step - warmup_steps) / decay_total
+    progress = min(max(progress, 0.0), 1.0)
+    import math
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return min_lr + (base_lr - min_lr) * cosine
+
+
+def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = lr
 
 
 def checkpoint_payload(
@@ -507,7 +544,24 @@ def main() -> int:
 
     last_log_time = time.time()
 
+    base_lr = args.learning_rate
+    min_lr = (
+        args.min_learning_rate
+        if args.min_learning_rate is not None
+        else base_lr * 0.1
+    )
+
     for step in range(start_step, args.max_steps + 1):
+        current_lr = compute_lr(
+            step,
+            base_lr=base_lr,
+            min_lr=min_lr,
+            schedule=args.lr_schedule,
+            warmup_steps=args.warmup_steps,
+            max_steps=args.max_steps,
+        )
+        set_optimizer_lr(optimizer, current_lr)
+
         x, y = dataset.get_batch("train")
         x = x.to(device)
         y = y.to(device)
@@ -524,7 +578,9 @@ def main() -> int:
             now = time.time()
             dt = now - last_log_time
             last_log_time = now
-            print(f"step={step} train_loss={loss.item():.6f} dt={dt:.2f}s")
+            print(
+                f"step={step} train_loss={loss.item():.6f} lr={current_lr:.6e} dt={dt:.2f}s"
+            )
 
         if step == start_step or step % args.eval_every == 0 or step == args.max_steps:
             losses = estimate_loss(model, dataset, device, args.eval_iters)

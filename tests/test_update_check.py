@@ -127,10 +127,19 @@ class RetrievalResolutionTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(
-                resolved,
-                str((Path(__file__).resolve().parents[1] / "data" / "chat_seed_friend_casual_mix_v1").resolve()),
+            repo_data = Path(__file__).resolve().parents[1] / "data"
+            preferred_order = (
+                repo_data / "chat_seed_friend_natural_v3",
+                repo_data / "chat_seed_friend_casual_mix_v1",
+                repo_data / "chat_seed_real_persona_casual_v1",
+                repo_data / "chat_seed_real_persona_v1",
+                repo_data / "chat_seed_refined_v1",
+                repo_data / "chat_seed_simple",
             )
+            expected = next(
+                str(candidate.resolve()) for candidate in preferred_order if candidate.is_dir()
+            )
+            self.assertEqual(resolved, expected)
 
 
 if __name__ == "__main__":
