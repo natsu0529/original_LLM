@@ -28,6 +28,178 @@ DEFAULT_SHORT_CHAT_LOOKUP_LENGTH = 12
 CHAT_LOOKUP_PUNCT_RE = re.compile(r"[。、！？!?…「」『』（）()\[\]{}<>:：,，./\\\-]+")
 CHAT_LOOKUP_SPACE_RE = re.compile(r"\s+")
 
+# Patterns that mark broken / low-quality model output we don't want to surface
+# from the retrieval corpus as canned answers.
+LOW_QUALITY_REPLY_SUBSTRINGS: tuple[str, ...] = (
+    "、、、",
+    "、、",
+    "。。",
+    "ーー",
+    "たいない",
+    "ているない",
+    "るのいる",
+    "なのなの",
+)
+LOW_QUALITY_SHORT_REPLIES: frozenset[str] = frozenset(
+    {
+        "はい",
+        "はい。",
+        "うん",
+        "うん。",
+        "ええ",
+        "ええ。",
+        "ああ",
+        "ああ。",
+        "そう",
+        "そう。",
+        "ね",
+        "ねえ",
+        "へえ",
+        "へえー",
+        "ふうん",
+        "なるほど",
+    }
+)
+MIN_QUALITY_REPLY_CHAR_LENGTH = 4
+
+# Replies that begin with these stems are typically dangling fragments cut
+# from a longer narrative passage (e.g. "もどすのが。" / "ところが。").
+# Filtering these out helps even when individual chars are kanji.
+LOW_QUALITY_REPLY_PREFIXES: tuple[str, ...] = (
+    "もどすのが",
+    "ところが",
+    "けれども",
+    "それでも",
+    "なるほどね",
+)
+
+# Replies that end with these endings on their own are usually incomplete.
+LOW_QUALITY_REPLY_ENDINGS: tuple[str, ...] = (
+    "のが",
+    "のが。",
+    "けれど",
+    "けれど。",
+    "ですが",
+    "ですが。",
+)
+
+# Sentence-final patterns that signal a truncated / dangling utterance.
+# We deliberately keep the trigger set narrow: "は？" alone is a perfectly
+# natural friend-style follow-up ("そっちは？"), while comma-prefixed short
+# fragments like "、お金も？" or "、おも？" are almost always model artifacts.
+DANGLING_FRAGMENT_TAIL_RE = re.compile(
+    r"、[ぁ-んァ-ン一-龥ー]{1,5}(?:が|を|に|で|も|へ)[?？！!]?$"
+)
+SOLO_PARTICLE_TAIL_RE = re.compile(
+    r"^(?:.{0,4}?)(?:が|を|に|で|も)[?？！!]?$"
+)
+
+# Generic supportive fallbacks for when the model returns broken or
+# off-topic text and no curated/retrieval reply is available. These are
+# intentionally vague so they don't lie about what the user said.
+GENERIC_FRIENDLY_FALLBACKS: tuple[str, ...] = (
+    "うん、もう少し聞かせて。",
+    "そっか。話してくれてありがとう。",
+    "なるほど、そういう感じか。",
+    "ちょっと考えるね。続けて？",
+    "うん、それでそれで？",
+)
+
+
+# Curated short replies for very common everyday utterances. These take
+# precedence over the noisy auto-built seed corpus when the user input
+# closely matches one of the keys. Replies are intentionally varied so
+# repeated identical prompts don't always emit the same answer.
+CURATED_SHORT_REPLIES: dict[tuple[str, ...], tuple[str, ...]] = {
+    ("こんにちは", "こんにちわ"): (
+        "こんにちは。今日はどうしてた？",
+        "こんにちは。元気にしてた？",
+        "やあ、こんにちは。",
+    ),
+    ("こんばんは", "こんばんわ"): (
+        "こんばんは。今日はもう落ち着いた？",
+        "こんばんは。無事に1日終わったね。",
+    ),
+    ("おはよう", "おはよ"): (
+        "おはよう。よく眠れた？",
+        "おはよう。今日はゆっくりやろう。",
+    ),
+    ("ただいま",): (
+        "おかえり。お疲れさま。",
+        "おかえり。少し休もう。",
+    ),
+    ("おやすみ",): (
+        "おやすみ。明日はまた話そう。",
+        "おやすみ。ゆっくり休んでね。",
+    ),
+    ("ありがとう", "ありがと", "サンキュー", "さんきゅう"): (
+        "どういたしまして。",
+        "気にしないで。こちらこそありがとう。",
+        "うん、いつでも。",
+    ),
+    ("ごめん", "ごめんね", "すまない", "すまん"): (
+        "気にしないで。大丈夫だよ。",
+        "うん、もう平気。",
+    ),
+    ("じゃあね", "またね", "バイバイ", "ばいばい"): (
+        "またね。気をつけて。",
+        "うん、またね。",
+    ),
+    ("元気", "元気？"): (
+        "まあまあ元気。そっちは？",
+        "うん、なんとかやってる。そっちはどう？",
+    ),
+    ("つかれた", "疲れた", "しんどい", "だるい"): (
+        "お疲れさま。少し休もう。",
+        "そっか、無理しないで。",
+        "今日はもうゆっくりしよう。",
+    ),
+    ("ねむい", "眠い"): (
+        "そろそろ寝てもいいかもね。",
+        "うん、無理しないで休んで。",
+    ),
+    ("眠れない", "ねむれない"): (
+        "そういう日はあるよ。深呼吸でもしてみる？",
+        "うん、ゆっくり考え事しないで横になろう。",
+    ),
+    ("お腹すいた", "おなかすいた", "腹減った", "はらへった"): (
+        "なにか軽く食べちゃおう。",
+        "うん、ちゃんと食べたほうがいい。",
+    ),
+    ("うれしい", "嬉しい"): (
+        "よかったね。それは何より。",
+        "おお、いいね。話聞きたい。",
+    ),
+    ("かなしい", "悲しい", "つらい", "辛い"): (
+        "そっか、つらいね。少しだけ話そうか。",
+        "無理しなくていいよ。ここにいるから。",
+    ),
+    ("さびしい", "寂しい"): (
+        "うん、そういう夜あるよね。",
+        "そばにいるよ、ゆっくりでいい。",
+    ),
+    ("好き", "大好き"): (
+        "うん、それを聞けてうれしい。",
+        "ありがとう。なんかこそばゆいな。",
+    ),
+    ("楽しい", "たのしい"): (
+        "それはいいね。続きが聞きたい。",
+        "うん、いい一日になったね。",
+    ),
+}
+
+# Greetings vs farewells live in disjoint "category" buckets — replying with
+# the wrong category is a frequent failure mode in the auto-built seed data
+# (e.g. "こんにちは" -> "こんばんわ"). We treat such cross-category replies as
+# low quality so they don't get surfaced as direct retrieval answers.
+GREETING_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "morning": ("おはよう",),
+    "afternoon": ("こんにちは", "こんにちわ"),
+    "evening": ("こんばんは", "こんばんわ"),
+    "farewell": ("さよなら", "さようなら", "じゃあね", "またね", "バイバイ", "ばいばい"),
+    "welcome_home": ("ただいま", "おかえり"),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ChatExample:
@@ -419,6 +591,121 @@ def split_chat_blocks(text: str) -> list[str]:
     return [block.strip() for block in re.split(r"\n\s*\n", normalized) if block.strip()]
 
 
+def greeting_category(lookup_text: str) -> str | None:
+    if not lookup_text:
+        return None
+    for category, keywords in GREETING_CATEGORY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in lookup_text:
+                return category
+    return None
+
+
+def _echo_compact(text: str) -> str:
+    compact = normalize_chat_lookup_text(text)
+    compact = compact.replace("ー", "").replace("〜", "").replace("～", "")
+    return compact
+
+
+def is_echo_reply(user_text: str, reply_text: str) -> bool:
+    user_norm = normalize_chat_lookup_text(user_text)
+    reply_norm = normalize_chat_lookup_text(reply_text)
+    if not user_norm or not reply_norm:
+        return False
+    if user_norm == reply_norm:
+        return True
+    user_compact = _echo_compact(user_text)
+    reply_compact = _echo_compact(reply_text)
+    if user_compact and user_compact == reply_compact:
+        return True
+    return False
+
+
+def has_dangling_particle_tail(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return DANGLING_FRAGMENT_TAIL_RE.search(stripped) is not None
+
+
+def is_low_quality_reply(
+    user_text: str,
+    reply_text: str,
+) -> bool:
+    cleaned = strip_turn_end_marker(reply_text).strip()
+    if not cleaned:
+        return True
+    if cleaned in LOW_QUALITY_SHORT_REPLIES:
+        return True
+    if any(token in cleaned for token in LOW_QUALITY_REPLY_SUBSTRINGS):
+        return True
+    if any(cleaned.startswith(prefix) for prefix in LOW_QUALITY_REPLY_PREFIXES):
+        return True
+    cleaned_for_ending = cleaned.rstrip("。！？!?")
+    if cleaned_for_ending and any(
+        cleaned_for_ending.endswith(ending.rstrip("。！？!?"))
+        and len(cleaned_for_ending) <= len(ending) + 2
+        for ending in LOW_QUALITY_REPLY_ENDINGS
+    ):
+        return True
+    if has_dangling_particle_tail(cleaned):
+        return True
+    if is_echo_reply(user_text, cleaned):
+        return True
+
+    user_lookup = normalize_chat_lookup_text(user_text)
+    reply_lookup = normalize_chat_lookup_text(cleaned)
+    if not reply_lookup:
+        return True
+    if len(reply_lookup) < MIN_QUALITY_REPLY_CHAR_LENGTH:
+        return True
+
+    user_category = greeting_category(user_lookup)
+    reply_category = greeting_category(reply_lookup)
+    if (
+        user_category is not None
+        and reply_category is not None
+        and user_category != reply_category
+    ):
+        return True
+
+    return False
+
+
+def curated_short_reply(
+    user_input: str,
+    *,
+    avoid_replies: tuple[str, ...] = (),
+    rotation_index: int = 0,
+) -> str | None:
+    lookup = normalize_chat_lookup_text(user_input)
+    if not lookup or len(lookup) > 12:
+        return None
+    avoid_norms = {
+        normalize_chat_lookup_text(r) for r in avoid_replies if r
+    }
+    matched_replies: tuple[str, ...] | None = None
+    for keys, replies in CURATED_SHORT_REPLIES.items():
+        for key in keys:
+            key_norm = normalize_chat_lookup_text(key)
+            if not key_norm:
+                continue
+            if lookup == key_norm or (
+                len(lookup) <= 6 and (key_norm in lookup or lookup in key_norm)
+            ):
+                matched_replies = replies
+                break
+        if matched_replies is not None:
+            break
+    if matched_replies is None:
+        return None
+
+    ordered = list(matched_replies)
+    fresh = [r for r in ordered if normalize_chat_lookup_text(r) not in avoid_norms]
+    pool = fresh or ordered
+    return pool[rotation_index % len(pool)]
+
+
 @lru_cache(maxsize=16)
 def load_chat_examples(
     corpus_dir_text: str,
@@ -441,6 +728,9 @@ def load_chat_examples(
             if formatted in seen_texts:
                 continue
             last_user_text = turns[-1][0].strip()
+            last_reply_text = turns[-1][1].strip()
+            if is_low_quality_reply(last_user_text, last_reply_text):
+                continue
             lookup_text = normalize_chat_lookup_text(last_user_text)
             if not lookup_text:
                 continue
@@ -448,7 +738,7 @@ def load_chat_examples(
                 ChatExample(
                     text=formatted,
                     last_user_text=last_user_text,
-                    last_reply_text=turns[-1][1].strip(),
+                    last_reply_text=last_reply_text,
                     lookup_text=lookup_text,
                 )
             )
@@ -459,6 +749,8 @@ def load_chat_examples(
 def chat_example_score(
     query_lookup_text: str,
     example_lookup_text: str,
+    *,
+    reply_text: str | None = None,
 ) -> float:
     if not query_lookup_text or not example_lookup_text:
         return 0.0
@@ -476,6 +768,19 @@ def chat_example_score(
     example_chars = set(example_lookup_text)
     if query_chars and example_chars:
         score += 10.0 * len(query_chars & example_chars) / len(query_chars | example_chars)
+
+    if reply_text is not None:
+        reply_clean = strip_turn_end_marker(reply_text).strip()
+        reply_lookup = normalize_chat_lookup_text(reply_clean)
+        reply_length = len(reply_lookup)
+        if 8 <= reply_length <= 30:
+            score += 8.0
+        elif 31 <= reply_length <= 50:
+            score += 4.0
+        elif reply_length < 4:
+            score -= 10.0
+        elif reply_length > 80:
+            score -= 6.0
     return score
 
 
@@ -532,7 +837,11 @@ def select_chat_retrieval_candidates(
         )
         if common_length < required_common_length:
             continue
-        score = chat_example_score(query_lookup_text, example.lookup_text)
+        score = chat_example_score(
+            query_lookup_text,
+            example.lookup_text,
+            reply_text=example.last_reply_text,
+        )
         if score < min_score:
             continue
         scored_examples.append(
@@ -584,6 +893,8 @@ def select_chat_retrieval_examples(
 def select_direct_chat_reply(
     user_input: str,
     args: argparse.Namespace,
+    *,
+    avoid_replies: tuple[str, ...] = (),
 ) -> str | None:
     if args.user_label is None or args.reply_label is None:
         return None
@@ -601,18 +912,35 @@ def select_direct_chat_reply(
         corpus_dir=retrieval_corpus_dir,
         user_label=args.user_label,
         reply_label=args.reply_label,
-        limit=1,
+        limit=8,
         min_score=DEFAULT_RETRIEVAL_SCORE_THRESHOLD,
     )
     if not candidates:
         return None
 
-    best = candidates[0]
-    common_length = longest_common_substring_length(query_lookup_text, best.lookup_text)
-    min_length = min(len(query_lookup_text), len(best.lookup_text))
-    if common_length != min_length:
-        return None
-    return best.last_reply_text or None
+    avoid_norms = {
+        normalize_chat_lookup_text(reply)
+        for reply in avoid_replies
+        if reply
+    }
+
+    for candidate in candidates:
+        common_length = longest_common_substring_length(
+            query_lookup_text,
+            candidate.lookup_text,
+        )
+        min_length = min(len(query_lookup_text), len(candidate.lookup_text))
+        if common_length != min_length:
+            continue
+        reply = candidate.last_reply_text
+        if not reply:
+            continue
+        if is_low_quality_reply(candidate.last_user_text, reply):
+            continue
+        if normalize_chat_lookup_text(reply) in avoid_norms:
+            continue
+        return reply
+    return None
 
 
 def build_chat_retrieval_block(
@@ -762,6 +1090,138 @@ def build_interactive_prompt(
     return trim_text_to_context(turn_prompt, tokenizer, context_length)
 
 
+def is_unsatisfactory_reply(
+    reply_text: str,
+    *,
+    user_input: str,
+    avoid_replies: tuple[str, ...] = (),
+) -> bool:
+    cleaned = strip_turn_end_marker(reply_text).strip()
+    if not cleaned:
+        return True
+    if is_low_quality_reply(user_input, cleaned):
+        return True
+    reply_norm = normalize_chat_lookup_text(cleaned)
+    if not reply_norm:
+        return True
+    for avoid in avoid_replies:
+        avoid_norm = normalize_chat_lookup_text(avoid)
+        if avoid_norm and avoid_norm == reply_norm:
+            return True
+    return False
+
+
+def fallback_friendly_reply(
+    *,
+    avoid_replies: tuple[str, ...] = (),
+    rotation_index: int = 0,
+) -> str:
+    avoid_norms = {
+        normalize_chat_lookup_text(r) for r in avoid_replies if r
+    }
+    fresh = [
+        r
+        for r in GENERIC_FRIENDLY_FALLBACKS
+        if normalize_chat_lookup_text(r) not in avoid_norms
+    ]
+    pool = fresh or list(GENERIC_FRIENDLY_FALLBACKS)
+    return pool[rotation_index % len(pool)]
+
+
+def generate_chat_reply_with_resample(
+    *,
+    model: "DecoderOnlyTransformer",
+    tokenizer: Tokenizer,
+    prompt: str,
+    args: argparse.Namespace,
+    device: torch.device,
+    user_input: str,
+    avoid_replies: tuple[str, ...] = (),
+    max_resamples: int = 2,
+) -> tuple[str, str, str]:
+    base_temperature = max(args.temperature, 1e-6)
+    base_top_k = args.top_k
+    base_seed = getattr(args, "seed", 0)
+    chosen_reply: str = ""
+    chosen_suffix: str = ""
+    chosen_generated: str = ""
+    last_generated: str = ""
+    last_suffix: str = ""
+    last_reply: str = ""
+    for attempt in range(max_resamples + 1):
+        if attempt > 0:
+            torch.manual_seed(base_seed + 100 * attempt + 7)
+        temperature = base_temperature
+        top_k = base_top_k
+        if attempt == 1:
+            temperature = max(base_temperature * 1.6, 0.5)
+            top_k = max(base_top_k, 16)
+        elif attempt >= 2:
+            temperature = max(base_temperature * 2.2, 0.7)
+            top_k = max(base_top_k, 24)
+
+        generated = generate_text(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            max_new_tokens=args.max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            repetition_penalty=args.repetition_penalty,
+            repetition_window=args.repetition_window,
+            stop_at_period=args.stop_at_period,
+            stop_at_blank_line=args.stop_at_blank_line,
+            min_new_chars_before_stop=args.min_new_chars_before_stop,
+            device=device,
+            stop_sequences=chat_stop_sequences(
+                args.user_label,
+                args.reply_label,
+                tokenizer=tokenizer,
+            ),
+        )
+        suffix = generated_suffix(prompt, generated, tokenizer=tokenizer)
+        if args.user_label is not None and args.reply_label is not None:
+            reply_text = extract_chat_reply(
+                suffix,
+                user_label=args.user_label,
+                reply_label=args.reply_label,
+                tokenizer=tokenizer,
+            )
+        else:
+            reply_text = suffix
+        last_generated = generated
+        last_suffix = suffix
+        last_reply = reply_text
+        if not is_unsatisfactory_reply(
+            reply_text,
+            user_input=user_input,
+            avoid_replies=avoid_replies,
+        ):
+            chosen_reply = reply_text
+            chosen_suffix = suffix
+            chosen_generated = generated
+            break
+    if not chosen_generated:
+        if is_unsatisfactory_reply(
+            last_reply,
+            user_input=user_input,
+            avoid_replies=avoid_replies,
+        ):
+            chosen_reply = fallback_friendly_reply(
+                avoid_replies=avoid_replies,
+                rotation_index=len(avoid_replies),
+            )
+            chosen_suffix = chosen_reply
+            chosen_generated = chosen_reply
+        else:
+            chosen_reply = last_reply
+            chosen_suffix = last_suffix
+            chosen_generated = last_generated
+    if base_seed:
+        torch.manual_seed(base_seed)
+    return chosen_reply, chosen_suffix, chosen_generated
+
+
 @torch.no_grad()
 def generate_text(
     model: DecoderOnlyTransformer,
@@ -894,6 +1354,7 @@ def interactive_loop(
         print(f"normalize-chat-input: {'on' if normalize_chat_input else 'off'}")
 
     history = ""
+    recent_replies: list[str] = []
     while True:
         try:
             user_input = input("> ")
@@ -911,6 +1372,7 @@ def interactive_loop(
             break
         if command == ":reset":
             history = ""
+            recent_replies = []
             print("(reset)")
             continue
         if command == ":help":
@@ -939,7 +1401,18 @@ def interactive_loop(
 
         prepared_user_input = prepare_chat_user_input(user_input, args)
         lookup_text = normalize_chat_lookup_text(prepared_user_input)
-        direct_reply = select_direct_chat_reply(prepared_user_input, args)
+        avoid_replies = tuple(recent_replies[-3:])
+        direct_reply = curated_short_reply(
+            prepared_user_input,
+            avoid_replies=avoid_replies,
+            rotation_index=len(recent_replies),
+        )
+        if direct_reply is None:
+            direct_reply = select_direct_chat_reply(
+                prepared_user_input,
+                args,
+                avoid_replies=avoid_replies,
+            )
         if direct_reply is not None:
             reply_text = direct_reply
             print()
@@ -969,6 +1442,8 @@ def interactive_loop(
                     context_length=model.config.context_length,
                     max_turns=getattr(args, "max_history_turns", None),
                 )
+            recent_replies.append(reply_text)
+            recent_replies = recent_replies[-5:]
             continue
 
         prompt = build_interactive_prompt(
@@ -1010,34 +1485,15 @@ def interactive_loop(
                 model.config.context_length,
             )
 
-        generated = generate_text(
+        reply_text, suffix, generated = generate_chat_reply_with_resample(
             model=model,
             tokenizer=tokenizer,
             prompt=prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            repetition_penalty=args.repetition_penalty,
-            repetition_window=args.repetition_window,
-            stop_at_period=args.stop_at_period,
-            stop_at_blank_line=args.stop_at_blank_line,
-            min_new_chars_before_stop=args.min_new_chars_before_stop,
+            args=args,
             device=device,
-            stop_sequences=chat_stop_sequences(
-                args.user_label,
-                args.reply_label,
-                tokenizer=tokenizer,
-            ),
+            user_input=prepared_user_input,
+            avoid_replies=avoid_replies,
         )
-        suffix = generated_suffix(prompt, generated, tokenizer=tokenizer)
-        reply_text = suffix
-        if args.user_label is not None and args.reply_label is not None:
-            reply_text = extract_chat_reply(
-                suffix,
-                user_label=args.user_label,
-                reply_label=args.reply_label,
-                tokenizer=tokenizer,
-            )
         print()
         if show_prompt_output or args.user_label is None or args.reply_label is None:
             print_block("prompt", prompt)
@@ -1065,6 +1521,9 @@ def interactive_loop(
                     tokenizer,
                     model.config.context_length,
                 )
+        if reply_text:
+            recent_replies.append(reply_text)
+            recent_replies = recent_replies[-5:]
 
 
 def main() -> int:

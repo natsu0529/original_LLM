@@ -21,6 +21,7 @@ from original_llm.generate import (
     DEFAULT_MIN_NEW_CHARS_BEFORE_STOP,
     chat_stop_sequences,
     choose_device,
+    curated_short_reply,
     extract_chat_reply,
     extract_pending_chat_user_input,
     generate_text,
@@ -719,7 +720,9 @@ def run_cli(
         )
         if pending_user_input is not None:
             prepared_user_input = prepare_chat_user_input(pending_user_input, args)
-            direct_reply = select_direct_chat_reply(prepared_user_input, args)
+            direct_reply = curated_short_reply(prepared_user_input)
+            if direct_reply is None:
+                direct_reply = select_direct_chat_reply(prepared_user_input, args)
             if direct_reply is None:
                 effective_prompt = prepend_chat_retrieval_examples(
                     prompt=prompt,
@@ -782,6 +785,12 @@ def main() -> int:
               original-llm "私は"
               original-llm --interactive --checkpoint checkpoints/dazai-long/best.pt
               original-llm --show-meta --checkpoint checkpoints/dazai-friend-peers-512x8-v1/best.pt
+
+            Update:
+              uv tool upgrade original-llm        # if installed via `uv tool install`
+              uv pip install -U original-llm      # if installed into a uv-managed venv
+              pipx upgrade original-llm           # if installed via pipx
+              original-llm --check-update         # check PyPI for a newer version
             """
         ).strip(),
     )
@@ -811,6 +820,12 @@ def main_chat() -> int:
               :help   show in-chat help
               :reset  clear session history
               :quit   exit
+
+            Update:
+              uv tool upgrade original-llm        # if installed via `uv tool install`
+              uv pip install -U original-llm      # if installed into a uv-managed venv
+              pipx upgrade original-llm           # if installed via pipx
+              dazai-chat --check-update           # check PyPI for a newer version
 
             Defaults:
               interactive=True

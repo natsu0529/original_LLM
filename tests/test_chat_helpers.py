@@ -11,9 +11,14 @@ from original_llm.data import CharTokenizer
 from original_llm.generate import (
     append_chat_history,
     chat_stop_sequences,
+    curated_short_reply,
     extract_chat_reply,
     extract_pending_chat_user_input,
+    fallback_friendly_reply,
     generated_suffix,
+    has_dangling_particle_tail,
+    is_echo_reply,
+    is_low_quality_reply,
     prepare_chat_user_input,
     select_direct_chat_reply,
     select_chat_retrieval_examples,
@@ -199,6 +204,105 @@ class ChatPromptSupportTests(unittest.TestCase):
             reply = select_direct_chat_reply("パンはパンでも食べられないパンは？", args)
 
         self.assertEqual(reply, "フライパンだろう。そういう顔をしている。")
+
+
+class NaturalnessHelperTests(unittest.TestCase):
+    def test_is_echo_reply_catches_normalized_echo(self) -> None:
+        self.assertTrue(is_echo_reply("こんにちは", "こんにちは"))
+        self.assertTrue(is_echo_reply("こんにちは", "こんにちは。"))
+        self.assertTrue(is_echo_reply("こんにちは", "こーんにーちはー。"))
+        self.assertFalse(is_echo_reply("こんにちは", "こんにちは。今日はどうしてた？"))
+
+    def test_is_low_quality_reply_flags_known_artifacts(self) -> None:
+        self.assertTrue(is_low_quality_reply("お腹すいた", "食べたいないと、言葉までやせる。"))
+        self.assertTrue(is_low_quality_reply("つらい", "もどすのが。"))
+        self.assertTrue(is_low_quality_reply("test", "実在する場所ではないので、お金も？"))
+        self.assertTrue(is_low_quality_reply("test", "うん"))
+
+    def test_is_low_quality_reply_keeps_natural_replies(self) -> None:
+        self.assertFalse(is_low_quality_reply("元気？", "まあまあ元気。そっちは？"))
+        self.assertFalse(is_low_quality_reply("test", "本当にそうかな？"))
+        self.assertFalse(is_low_quality_reply("test", "なにか軽く食べちゃおう。"))
+
+    def test_has_dangling_particle_tail_only_flags_comma_fragments(self) -> None:
+        self.assertTrue(has_dangling_particle_tail("実在する場所ではないので、お金も？"))
+        self.assertFalse(has_dangling_particle_tail("まあまあ元気。そっちは？"))
+
+    def test_curated_short_reply_returns_natural_greeting(self) -> None:
+        reply = curated_short_reply("こんにちは")
+        self.assertIsNotNone(reply)
+        self.assertIn("こんにちは", reply)
+
+    def test_curated_short_reply_avoids_recent_replies(self) -> None:
+        first = curated_short_reply("ありがとう", rotation_index=0)
+        second = curated_short_reply(
+            "ありがとう",
+            avoid_replies=(first,) if first is not None else (),
+            rotation_index=1,
+        )
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first, second)
+
+    def test_curated_short_reply_returns_none_for_unknown_input(self) -> None:
+        self.assertIsNone(curated_short_reply("ピクニック行きたいな"))
+
+    def test_fallback_friendly_reply_picks_safe_response(self) -> None:
+        first = fallback_friendly_reply(rotation_index=0)
+        self.assertTrue(first)
+        second = fallback_friendly_reply(avoid_replies=(first,), rotation_index=1)
+        self.assertNotEqual(first, second)
+
+
+class DirectChatReplyQualityTests(unittest.TestCase):
+    def test_skips_echo_seed_in_favor_of_richer_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            corpus_dir = Path(tmp_dir)
+            (corpus_dir / "seed.txt").write_text(
+                "\n\n".join(
+                    [
+                        "私: こんにちは\n相手: こんにちは",
+                        "私: こんにちは\n相手: こんにちは。今日はどうしてた？",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                user_label="私",
+                reply_label="相手",
+                retrieval_corpus_dir=str(corpus_dir),
+            )
+            reply = select_direct_chat_reply("こんにちは", args)
+        self.assertEqual(reply, "こんにちは。今日はどうしてた？")
+
+    def test_avoid_replies_skips_recent_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            corpus_dir = Path(tmp_dir)
+            (corpus_dir / "seed.txt").write_text(
+                "\n\n".join(
+                    [
+                        "私: ありがとう\n相手: どういたしまして。",
+                        "私: ありがとう\n相手: 気にしないで。こちらこそありがとう。",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                user_label="私",
+                reply_label="相手",
+                retrieval_corpus_dir=str(corpus_dir),
+            )
+            first = select_direct_chat_reply("ありがとう", args)
+            second = select_direct_chat_reply(
+                "ありがとう",
+                args,
+                avoid_replies=(first,) if first is not None else (),
+            )
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

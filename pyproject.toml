@@ -17,3 +17,8 @@ dazai-chat = "original_llm.cli:main_chat"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
