@@ -817,27 +817,6 @@ def run_cli(
     return 0
 
 
-def main() -> int:
-    return run_cli(
-        prog="original-llm",
-        description="Generate text with a small LLM trained from scratch.",
-        epilog=textwrap.dedent(
-            """
-            Examples:
-              original-llm "私は"
-              original-llm --interactive --checkpoint checkpoints/dazai-long/best.pt
-              original-llm --show-meta --checkpoint checkpoints/dazai-friend-peers-512x8-v1/best.pt
-
-            Update:
-              uv tool upgrade original-llm        # if installed via `uv tool install`
-              uv pip install -U original-llm      # if installed into a uv-managed venv
-              pipx upgrade original-llm           # if installed via pipx
-              original-llm --check-update         # check PyPI for a newer version
-            """
-        ).strip(),
-    )
-
-
 def main_chat() -> int:
     chat_checkpoint = preferred_chat_checkpoint()
     installed_version = package_version_string()
@@ -904,4 +883,4 @@ def main_chat() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main_chat())
