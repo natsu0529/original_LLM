@@ -618,6 +618,25 @@ def parse_args(
         help="Lightly normalize short chat input before interactive generation and retrieval lookup.",
     )
     parser.add_argument(
+        "--memory-db",
+        type=str,
+        default=None,
+        help="Path to a SQLite database that holds long-term memory entries. "
+             "Defaults to $XDG_DATA_HOME/original-llm/memory.db.",
+    )
+    parser.add_argument(
+        "--use-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable persistent memory store and prompt injection.",
+    )
+    parser.add_argument(
+        "--memory-inject",
+        type=int,
+        default=3,
+        help="Maximum number of memory entries injected into the prompt prefix.",
+    )
+    parser.add_argument(
         "--show-meta",
         action="store_true",
         help="Print checkpoint metadata before generation.",

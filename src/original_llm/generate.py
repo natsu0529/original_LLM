@@ -16,6 +16,15 @@ from original_llm.data import (
     blocked_generation_token_ids,
     tokenizer_from_state_dict,
 )
+from original_llm.memory import (
+    DEFAULT_IMPORTANCE,
+    DEFAULT_INJECT_LIMIT,
+    MAX_IMPORTANCE,
+    MIN_IMPORTANCE,
+    MemoryEntry,
+    MemoryStore,
+    default_memory_path,
+)
 from original_llm.model import DecoderOnlyTransformer, count_parameters
 
 
@@ -329,6 +338,11 @@ def validate_args(args: argparse.Namespace) -> None:
         )
     if (args.user_label is None) != (args.reply_label is None):
         raise ValueError("user_label and reply_label must be provided together")
+    memory_inject = getattr(args, "memory_inject", None)
+    if memory_inject is not None and memory_inject < 0:
+        raise ValueError(
+            f"memory_inject must be non-negative, got {memory_inject}"
+        )
 
 
 def trim_text_to_context(
@@ -1111,6 +1125,85 @@ def is_unsatisfactory_reply(
     return False
 
 
+def format_memory_block(
+    entries: list[MemoryEntry],
+    user_label: str,
+    reply_label: str,
+) -> str:
+    """Render memory entries as a single chat turn the model can attend to."""
+    if not entries:
+        return ""
+    facts: list[str] = []
+    for entry in entries:
+        key = entry.key.strip()
+        value = entry.value.strip()
+        if not key or not value:
+            continue
+        facts.append(f"{key}は{value}")
+    if not facts:
+        return ""
+    user_line = "覚えておいてね: " + "、".join(facts) + "。"
+    reply_line = "うん、覚えた。"
+    return (
+        f"{role_prompt(user_label)}{user_line}\n"
+        f"{role_prompt(reply_label)}{reply_line}\n"
+        f"{CHAT_TURN_END_MARKER}"
+    )
+
+
+def parse_remember_command(
+    command: str,
+) -> tuple[str, str, int] | None:
+    """Parse ``:remember <key> <value> [importance]`` style command lines.
+
+    Returns ``(key, value, importance)`` or ``None`` if it does not match.
+    Accepts ``:remember key=value`` and trailing 1-5 importance tokens.
+    """
+    if not command.startswith(":remember"):
+        return None
+    rest = command[len(":remember") :].strip()
+    if not rest:
+        return None
+
+    # Optional trailing importance number (single digit 1..5).
+    importance = DEFAULT_IMPORTANCE
+    parts = rest.rsplit(None, 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        candidate = int(parts[1])
+        if MIN_IMPORTANCE <= candidate <= MAX_IMPORTANCE:
+            importance = candidate
+            rest = parts[0].strip()
+            if not rest:
+                return None
+
+    if "=" in rest:
+        key, _, value = rest.partition("=")
+    else:
+        head_parts = rest.split(None, 1)
+        if len(head_parts) != 2:
+            return None
+        key, value = head_parts
+    key = key.strip()
+    value = value.strip()
+    if not key or not value:
+        return None
+    return key, value, importance
+
+
+def parse_forget_command(command: str) -> tuple[str, str] | None:
+    """Parse ``:forget <id>`` or ``:forget-key <key>``.
+
+    Returns ``("id", "<id>")`` or ``("key", "<key>")`` or ``None``.
+    """
+    if command.startswith(":forget-key"):
+        rest = command[len(":forget-key") :].strip()
+        return ("key", rest) if rest else None
+    if command.startswith(":forget"):
+        rest = command[len(":forget") :].strip()
+        return ("id", rest) if rest else None
+    return None
+
+
 def fallback_friendly_reply(
     *,
     avoid_replies: tuple[str, ...] = (),
@@ -1353,6 +1446,24 @@ def interactive_loop(
         normalize_chat_input = getattr(args, "normalize_chat_input", False)
         print(f"normalize-chat-input: {'on' if normalize_chat_input else 'off'}")
 
+    memory_store: MemoryStore | None = None
+    memory_enabled = (
+        getattr(args, "use_memory", True)
+        and args.user_label is not None
+        and args.reply_label is not None
+    )
+    if memory_enabled:
+        memory_path = getattr(args, "memory_db", None) or str(default_memory_path())
+        try:
+            memory_store = MemoryStore(memory_path)
+            entry_count = len(memory_store.list_all())
+            print(f"memory-db: {memory_path} ({entry_count} entries)")
+        except Exception as exc:
+            print(f"memory-db: disabled (could not open {memory_path}: {exc})")
+            memory_store = None
+
+    memory_inject_limit = max(0, int(getattr(args, "memory_inject", DEFAULT_INJECT_LIMIT)))
+
     history = ""
     recent_replies: list[str] = []
     while True:
@@ -1375,10 +1486,57 @@ def interactive_loop(
             recent_replies = []
             print("(reset)")
             continue
+        if memory_store is not None:
+            if command == ":memory":
+                entries = memory_store.list_all()
+                if not entries:
+                    print("(memory is empty)")
+                else:
+                    for entry in entries:
+                        print(
+                            f"  #{entry.id} [{entry.importance}] "
+                            f"{entry.key} = {entry.value} "
+                            f"(updated {entry.updated_at})"
+                        )
+                continue
+            if command == ":memory clear":
+                deleted = memory_store.clear()
+                print(f"(cleared {deleted} entries)")
+                continue
+            remember_parsed = parse_remember_command(command)
+            if remember_parsed is not None:
+                key, value, importance = remember_parsed
+                entry = memory_store.add(key, value, importance)
+                print(f"(remembered #{entry.id}: {entry.key} = {entry.value}, importance={entry.importance})")
+                continue
+            forget_parsed = parse_forget_command(command)
+            if forget_parsed is not None:
+                kind, target = forget_parsed
+                if kind == "id":
+                    if not target.isdigit():
+                        print(f"(usage: :forget <id>; got {target!r})")
+                        continue
+                    if memory_store.delete(int(target)):
+                        print(f"(forgot #{target})")
+                    else:
+                        print(f"(no entry with id {target})")
+                else:
+                    deleted = memory_store.delete_by_key(target)
+                    if deleted:
+                        print(f"(forgot {deleted} entries with key {target!r})")
+                    else:
+                        print(f"(no entries with key {target!r})")
+                continue
         if command == ":help":
             print("テキストを入力すると返答を生成")
             print(":reset -> この起動中の会話履歴を消す")
             print(":quit  -> 終了")
+            if memory_store is not None:
+                print(":memory               -> 記憶している項目を一覧表示")
+                print(":memory clear         -> 記憶を全消去")
+                print(":remember <key> <value> [1-5] -> 記憶を追加（1-5は重要度、既定3）")
+                print(":forget <id>          -> id 指定で記憶を消す")
+                print(":forget-key <key>     -> key 指定で記憶を消す")
             print(f"carry-context -> {'on' if args.carry_context else 'off'}")
             if args.carry_context:
                 print(
@@ -1457,6 +1615,23 @@ def interactive_loop(
             tokenizer=tokenizer,
             context_length=model.config.context_length,
         )
+        memory_block: str = ""
+        if memory_store is not None and memory_inject_limit > 0:
+            relevant = memory_store.select_relevant(
+                prepared_user_input,
+                limit=memory_inject_limit,
+            )
+            memory_block = format_memory_block(
+                relevant,
+                args.user_label,
+                args.reply_label,
+            )
+        if memory_block:
+            prompt = trim_text_to_context(
+                f"{memory_block}\n\n{prompt}",
+                tokenizer,
+                model.config.context_length,
+            )
         retrieval_block = build_chat_retrieval_block(prepared_user_input, args)
         if retrieval_block is not None and history and args.user_label is not None:
             current_turn_prompt = build_interactive_prompt(
@@ -1524,6 +1699,9 @@ def interactive_loop(
         if reply_text:
             recent_replies.append(reply_text)
             recent_replies = recent_replies[-5:]
+
+    if memory_store is not None:
+        memory_store.close()
 
 
 def main() -> int:
