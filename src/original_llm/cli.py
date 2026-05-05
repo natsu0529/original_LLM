@@ -109,6 +109,7 @@ def resolve_checkpoint(
 def preferred_chat_checkpoint() -> Path | None:
     checkpoint_root = REPO_ROOT / "checkpoints"
     patterns = (
+        "dazai-friend-natural-v5-*/best.pt",
         "dazai-friend-natural-v4-*/best.pt",
         "dazai-friend-natural-v3-*/best.pt",
         "dazai-friend-natural-*/best.pt",
@@ -171,6 +172,12 @@ def resolve_retrieval_corpus_dir(
             or "chat_seed" in resolved.name
         ):
             return str(resolved)
+
+    preferred_natural_dir = resolve_existing_dir(
+        REPO_ROOT / "data" / "chat_seed_friend_natural_v5"
+    )
+    if preferred_natural_dir is not None:
+        return str(preferred_natural_dir)
 
     preferred_natural_dir = resolve_existing_dir(
         REPO_ROOT / "data" / "chat_seed_friend_natural_v4"

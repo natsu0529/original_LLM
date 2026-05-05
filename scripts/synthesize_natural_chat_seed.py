@@ -773,6 +773,344 @@ def gen_two_turn_followups(rng: random.Random) -> list[Sequence[TurnPair]]:
     return blocks
 
 
+def gen_parameterized_multi_turns(
+    rng: random.Random,
+) -> list[Sequence[TurnPair]]:
+    """Heavy parameterized multi-turn generator (target ~3000-6000 blocks).
+
+    Each scenario is a 2-3 turn template that fills slots from the existing
+    SAVORY/SWEET/PLACES/HOBBIES/ANIMALS slot sets. The template enforces
+    *topic continuity*: turn 2's user input references something from turn 1.
+    """
+    blocks: list[Sequence[TurnPair]] = []
+
+    # ---- food (eaten) — 3 turns: report -> ask -> close ---------------------
+    for food in FOODS_SAVORY + FOODS_SWEET:
+        blocks.append(
+            (
+                TurnPair(f"今日{food}食べた", "おお、いいね。おいしかった？"),
+                TurnPair("うん、おいしかった", "それはなにより。お腹いっぱいになった？"),
+                TurnPair("うん、満腹", "じゃあちょっとゆっくり休も。"),
+            )
+        )
+        blocks.append(
+            (
+                TurnPair(f"{food}食べたい", f"いいね、{food}おいしいよね。"),
+                TurnPair("買いに行こうかな", "うん、行ってきな。"),
+            )
+        )
+        blocks.append(
+            (
+                TurnPair(f"{food}どう思う？", "私は好きだよ。たまに食べたくなる。"),
+                TurnPair("私も好き", "じゃあ気が合うね。"),
+            )
+        )
+
+    # ---- food (want) — multi-turn negotiation -----------------------------
+    for food in FOODS_SAVORY[:12]:
+        blocks.append(
+            (
+                TurnPair("お腹すいた", "なにか食べよっか。"),
+                TurnPair(f"{food}食べたい", "いいね、行こう。"),
+                TurnPair("一緒に？", "うん、もちろん。"),
+            )
+        )
+
+    # ---- drinks ------------------------------------------------------------
+    for drink in DRINKS:
+        blocks.append(
+            (
+                TurnPair(f"{drink}飲みたい", f"いいね、{drink}いれよっか。"),
+                TurnPair("うん、お願い", "はい、どうぞ。"),
+            )
+        )
+        blocks.append(
+            (
+                TurnPair(f"{drink}入れたよ", "ありがとう、ちょうど飲みたかった。"),
+                TurnPair("どういたしまして", "じゃあ少し休もう。"),
+            )
+        )
+
+    # ---- places — outings with topic continuity ----------------------------
+    for place in PLACES:
+        blocks.append(
+            (
+                TurnPair(f"{place}行きたい", f"いいね、{place}気持ちよさそう。"),
+                TurnPair("一緒に行こうよ", "うん、行こう。今度の休みに。"),
+                TurnPair("楽しみ", "私も楽しみ。"),
+            )
+        )
+        blocks.append(
+            (
+                TurnPair(f"{place}行ってきた", "おお、どうだった？"),
+                TurnPair("良かったよ", "それはよかった。"),
+            )
+        )
+
+    # ---- weather -----------------------------------------------------------
+    for w in WEATHER_GOOD:
+        blocks.append(
+            (
+                TurnPair(f"{w}だね", "ね、気持ちいい。"),
+                TurnPair("散歩でも行こうかな", "いいね、行ってきな。"),
+            )
+        )
+    for w in WEATHER_BAD:
+        blocks.append(
+            (
+                TurnPair(f"外{w}", "うん、こういう日は無理しないでいいよ。"),
+                TurnPair("家にいるよ", "うん、それが正解。"),
+            )
+        )
+
+    # ---- hobbies -----------------------------------------------------------
+    for hobby in HOBBIES:
+        blocks.append(
+            (
+                TurnPair(f"最近{hobby}にハマってる", f"いいね、{hobby}は心が落ち着くよね。"),
+                TurnPair("そうそう", "おすすめあったら教えて。"),
+            )
+        )
+
+    # ---- animals -----------------------------------------------------------
+    for animal in ANIMALS:
+        blocks.append(
+            (
+                TurnPair(f"{animal}飼いたい", f"いいね、{animal}と暮らせたら楽しそう。"),
+                TurnPair("でもまだ無理かな", "うん、いつかね。"),
+            )
+        )
+        blocks.append(
+            (
+                TurnPair(f"{animal}見た", "おお、かわいかった？"),
+                TurnPair("うん、めちゃくちゃ", "それは癒されたね。"),
+            )
+        )
+
+    # ---- mood / supportive -------------------------------------------------
+    sad_inputs = (
+        "なんかつらい",
+        "今日しんどい",
+        "落ち込んでる",
+        "やる気でない",
+        "気分が重い",
+        "ちょっと泣きそう",
+    )
+    for u in sad_inputs:
+        blocks.append(
+            (
+                TurnPair(u, "うん、無理しないで。話せる範囲で聞くよ。"),
+                TurnPair("仕事で怒られた", "それはきついね。よくがんばってる。"),
+                TurnPair("ありがとう", "うん、いつでも。"),
+            )
+        )
+        blocks.append(
+            (
+                TurnPair(u, "そっか、深呼吸しよ。ひと息ついて。"),
+                TurnPair("少し落ち着いた", "それはよかった。"),
+            )
+        )
+
+    happy_inputs = (
+        "今日いい日だった",
+        "ちょっと嬉しいことあった",
+        "うまくいった",
+        "ほめられちゃった",
+    )
+    for u in happy_inputs:
+        blocks.append(
+            (
+                TurnPair(u, "おお、なに？聞きたい。"),
+                TurnPair("仕事で評価された", "それは嬉しいね、こっちも嬉しい。"),
+            )
+        )
+
+    # ---- sleep / dream — explicitly converge to "もう起きた" ---------------
+    blocks.append(
+        (
+            TurnPair("眠れない", "考え事しちゃってる？"),
+            TurnPair("うん", "深呼吸しよ。横になるだけでも休まるから。"),
+            TurnPair("やってみる", "うん、おやすみ。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("夢見た", "へえ、どんな夢？"),
+            TurnPair("変な駅にいた", "それはちょっと不思議だね。"),
+            TurnPair("もう起きたから大丈夫", "うん、夢は夢ってことで。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("変な夢見た", "それはちょっと聞きたい。"),
+            TurnPair("猫を探してた", "起きてからもまだ気になってる感じ？"),
+            TurnPair("ちょっとだけ", "じゃあぼーっとしてからにしよ。"),
+        )
+    )
+
+    # ---- work / study -----------------------------------------------------
+    blocks.append(
+        (
+            TurnPair("仕事終わった", "おつかれさま。今日は何時間だった？"),
+            TurnPair("長かった", "それはきつかったね。ゆっくり休も。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("仕事だるい", "わかる、ちょっと休憩しよ。"),
+            TurnPair("そうする", "うん、5 分だけでも違うから。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("勉強したくない", "うん、そういう日もあるよ。"),
+            TurnPair("でもやらなきゃ", "じゃあ 15 分だけやってみる？"),
+            TurnPair("わかった", "うん、それで十分。"),
+        )
+    )
+
+    # ---- subject hygiene: 「私は…」 / 「あなたは？」-----------------------
+    self_assertions = (
+        ("私はもう起きたよ", "おお、おはよう。よく眠れた？"),
+        ("私はラーメン食べた", "いいね、おいしかった？"),
+        ("私は猫派だよ", "そっか、私もどっちかというと猫好き。"),
+        ("私は本読んでる", "いいね、なに読んでるの？"),
+        ("私は家にいるよ", "そっか、ゆっくりしてるんだね。"),
+        ("私は元気だよ", "それはよかった、なにより。"),
+    )
+    for u, r in self_assertions:
+        blocks.append(
+            (
+                TurnPair(u, r),
+                TurnPair("そっち は？", "私？私もぼちぼち。"),
+            )
+        )
+
+    # ---- "あなたは？" probe (matched to self_assertions style) ------------
+    you_probes = (
+        "あなたは？",
+        "そっちは？",
+        "そちらは？",
+    )
+    you_replies = (
+        "私はぼんやりしてる。",
+        "私は本読んでた。",
+        "私は家にいるよ。",
+        "私もぼちぼち。",
+    )
+    for u in you_probes:
+        for r in you_replies:
+            blocks.append(
+                (
+                    TurnPair("家にいるよ", "そっか、のんびりだね。"),
+                    TurnPair(u, r),
+                )
+            )
+
+    # ---- repair turns -----------------------------------------------------
+    repair_users = (
+        "何言ってるのさ",
+        "意味わかんない",
+        "話通じてる？",
+        "そういう話じゃないよ",
+        "どういうこと？",
+    )
+    repair_replies = (
+        "ごめんごめん、ちょっと話戻すね。",
+        "ごめん、言い方変だったね。もう一回言う。",
+        "ああ、ごめん。話ずれた。",
+        "うん、ごめん。要するに少し休もうって話。",
+    )
+    for u in repair_users:
+        for r in repair_replies:
+            blocks.append(
+                (
+                    TurnPair(u, r),
+                    TurnPair("わかった", "うん、ありがとう。"),
+                )
+            )
+
+    # ---- 「何してる？」/「何食べた？」/「どこ行った？」など probe ----------
+    probe_qa_pairs = (
+        ("何してる？", "本読んでた。そっちは？"),
+        ("何してる？", "ぼーっとしてた。"),
+        ("何してる？", "ご飯作ってた。"),
+        ("何食べた？", "うどん食べた。あったかいやつ。"),
+        ("何食べた？", "おにぎり食べた。"),
+        ("どこ行った？", "近所のスーパー。"),
+        ("どこ行った？", "公園で散歩してた。"),
+        ("今日は何してた？", "家にいた。雨だったから。"),
+        ("今日は何してた？", "本読んでぼんやりしてた。そっちは？"),
+        ("今日は何してた？", "散歩してた。気持ちよかったよ。"),
+        ("今日何してた？", "近所をぶらぶらしてた。"),
+    )
+    follow_ups = (
+        "そっか",
+        "いいね",
+        "へえ",
+        "うんうん",
+    )
+    follow_up_replies = (
+        "うん、たまにはね。",
+        "そっちは？",
+        "ありがと、あとで話そう。",
+    )
+    for q, a in probe_qa_pairs:
+        for fu in follow_ups:
+            for fr in follow_up_replies:
+                blocks.append(
+                    (
+                        TurnPair(q, a),
+                        TurnPair(fu, fr),
+                    )
+                )
+
+    # ---- 「遊ぼう」「一緒に」誘い -----------------------------------------
+    invite_blocks = (
+        ("少し遊ぼうよ", "いいね、何して遊ぼうか？"),
+        ("一緒に話そ", "うん、もちろん。"),
+        ("ちょっと話そ", "うん、聞くよ。"),
+        ("暇だから話そ", "いいよ、なに話そっか。"),
+    )
+    invite_followups = (
+        ("しりとりしよ", "いいね、じゃあ私から。りんご。"),
+        ("最近の話聞かせて", "ぼちぼちかな、特に変わったことは無いけど。"),
+        ("好きな食べ物の話", "私はラーメンとか好きだよ。そっちは？"),
+        ("天気の話", "今日はぼちぼちだね。"),
+    )
+    for u, r in invite_blocks:
+        for u2, r2 in invite_followups:
+            blocks.append(
+                (
+                    TurnPair(u, r),
+                    TurnPair(u2, r2),
+                )
+            )
+
+    # ---- 「えっと」「うーん」みたいな躊躇に対する引き出し ------------------
+    hesitation_users = (
+        "えっと",
+        "うーん",
+        "なんて言うか",
+        "ちょっと考え中",
+    )
+    pull_replies = (
+        "うん、ゆっくりでいいよ。",
+        "急がなくていい、待つよ。",
+        "うん、思い出したら教えて。",
+    )
+    for u in hesitation_users:
+        for r in pull_replies:
+            blocks.append(
+                (
+                    TurnPair(u, r),
+                    TurnPair("ありがとう", "うん、いつでも。"),
+                )
+            )
+
+    return blocks
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -821,30 +1159,41 @@ def main() -> int:
 
     rng.shuffle(unique_pairs)
 
-    multi_blocks = gen_two_turn_followups(rng)
+    # Big parameterized multi-turn pool first (target dominance).
+    multi_blocks: list[Sequence[TurnPair]] = []
+    multi_blocks.extend(gen_parameterized_multi_turns(rng))
+    multi_blocks.extend(gen_two_turn_followups(rng))
 
-    # Build blocks: most are single-turn, every ~10th is multi-turn.
+    # de-duplicate multi-turn blocks by their stringified form
+    seen_blocks: set[str] = set()
+    deduped_multi: list[Sequence[TurnPair]] = []
+    for block in multi_blocks:
+        key = _format_block(block)
+        if key in seen_blocks:
+            continue
+        seen_blocks.add(key)
+        deduped_multi.append(block)
+    multi_blocks = deduped_multi
+    rng.shuffle(multi_blocks)
+
     blocks_text: list[str] = []
-    multi_iter = itertools.cycle(multi_blocks)
-    for index, pair in enumerate(unique_pairs):
-        blocks_text.append(_format_block([pair]))
-        # Insert a multi-turn block every 5 single-turns instead of every 10
-        # so the model gets more practice keeping context across turns.
-        if index % 5 == 4:
-            blocks_text.append(_format_block(next(multi_iter)))
+
+    # Phase 1 — emit every multi-turn block at least once (the heart of the
+    # corpus now: we want context-following to dominate).
+    for block in multi_blocks:
+        blocks_text.append(_format_block(block))
         if len(blocks_text) >= args.target_blocks:
             break
 
-    # If we still have headroom, append the multi-turn blocks several more
-    # times so the corpus has a meaningful tail of conversational examples.
-    if len(blocks_text) < args.target_blocks:
-        for _ in range(3):
-            for block in multi_blocks:
-                blocks_text.append(_format_block(block))
-                if len(blocks_text) >= args.target_blocks:
-                    break
-            if len(blocks_text) >= args.target_blocks:
-                break
+    # Phase 2 — interleave single-turn pairs and additional multi-turn
+    # repeats so the ratio stays roughly 1 single : 1 multi.
+    multi_iter = itertools.cycle(multi_blocks)
+    for index, pair in enumerate(unique_pairs):
+        if len(blocks_text) >= args.target_blocks:
+            break
+        blocks_text.append(_format_block([pair]))
+        if index % 2 == 1:
+            blocks_text.append(_format_block(next(multi_iter)))
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     files_written = 0
