@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--reset-optimizer", action="store_true")
     parser.add_argument("--reset-best-val-loss", action="store_true")
+    parser.add_argument(
+        "--reset-step",
+        action="store_true",
+        help="When resuming, restart the step counter at 1 (use with --max-steps as a fresh budget).",
+    )
 
     parser.add_argument("--data-dir", type=Path, default=DataConfig().data_dir)
     parser.add_argument("--manifest-path", type=Path, default=DataConfig().manifest_path)
@@ -522,12 +527,17 @@ def main() -> int:
         )
         if args.reset_best_val_loss:
             best_val_loss = None
-        start_step = resumed_step + 1
+        if args.reset_step:
+            start_step = 1
+        else:
+            start_step = resumed_step + 1
         print(f"resumed_from={args.resume} step={resumed_step}")
         if args.reset_optimizer:
             print("optimizer_state=reset")
         if args.reset_best_val_loss:
             print("best_val_loss=reset")
+        if args.reset_step:
+            print("step=reset")
 
     print(f"run_name={run_config.run_name}")
     print(f"device={device}")
