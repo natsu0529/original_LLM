@@ -16,6 +16,11 @@ from original_llm.data import (
     blocked_generation_token_ids,
     tokenizer_from_state_dict,
 )
+from original_llm.language import (
+    is_non_japanese_input,
+    looks_like_single_word,
+    looks_like_typo_correction,
+)
 from original_llm.memory import (
     DEFAULT_IMPORTANCE,
     DEFAULT_INJECT_LIMIT,
@@ -34,6 +39,71 @@ DEFAULT_MIN_NEW_CHARS_BEFORE_STOP = 24
 DEFAULT_STOP_CHARS = ("。", "！", "？", "」")
 DEFAULT_RETRIEVAL_SCORE_THRESHOLD = 55.0
 DEFAULT_SHORT_CHAT_LOOKUP_LENGTH = 12
+
+# Reply text used when the user types something that contains zero Japanese
+# letters. Hard-coded so the model is never asked to invent it.
+NON_JAPANESE_GUARD_REPLY = "私は日本語しか喋れないんだ。"
+
+# Reply when the model's confidence is low and the input doesn't match any
+# stored memory. The user is invited to teach us.
+UNKNOWN_WORD_QUESTION_TEMPLATES: tuple[str, ...] = (
+    "知らない言葉だね、それは何？",
+    "{word}って初めて聞くな、何のこと？",
+    "{word}か、教えてもらってもいい？",
+)
+
+# Reply we emit after the user explains a previously-unknown word and we have
+# successfully stored their explanation.
+UNKNOWN_WORD_LEARNED_TEMPLATES: tuple[str, ...] = (
+    "覚えた、{word}ってそういうことなんだね。",
+    "なるほど、{word}メモしておくね。",
+    "ありがとう、{word}覚えた。",
+)
+
+# Confidence threshold below which a single-word reply is treated as a sign
+# the model didn't really understand the input. Chosen empirically — typical
+# coherent replies for known phrases sit well above 0.4 mean prob.
+DEFAULT_UNKNOWN_CONFIDENCE_THRESHOLD = 0.55
+
+# Memory key prefix used when storing words the user introduced through the
+# unknown-word teaching flow. Keeps them visually distinct from explicit
+# ``:remember`` entries.
+UNKNOWN_MEMORY_KEY_PREFIX = "word:"
+
+# Triggers + reply for "how do I update?" type questions. We keep this as a
+# curated answer because the model itself shouldn't try to invent install
+# commands. Patterns are checked against the lower-cased input AND the
+# original input (Japanese strings are case-stable; the lower-case pass is
+# only there so "uv" / "PyPI" / etc. don't slip through).
+UPDATE_QUESTION_PATTERNS: tuple[str, ...] = (
+    "アップデート",
+    "アップグレード",
+    "更新",
+    "バージョンアップ",
+    "最新版",
+    "新しいバージョン",
+    "uv tool upgrade",
+    "pip install -u",
+    "upgrade",
+)
+UPDATE_GUIDE_REPLY = (
+    "アップデートは `uv tool upgrade original-llm` を打つだけだよ。"
+    "uv じゃない人は `pip install -U original-llm` でも OK。"
+)
+
+
+def looks_like_update_question(text: str) -> bool:
+    """True if ``text`` looks like a "how do I update?" question.
+
+    Keyword based, on purpose: the model is too small to identify intent on
+    its own, so the curated answer is gated by simple substring matches.
+    """
+    if not text:
+        return False
+    target = text.lower()
+    if any(pattern in target for pattern in UPDATE_QUESTION_PATTERNS):
+        return True
+    return any(pattern in text for pattern in UPDATE_QUESTION_PATTERNS)
 CHAT_LOOKUP_PUNCT_RE = re.compile(r"[。、！？!?…「」『』（）()\[\]{}<>:：,，./\\\-]+")
 CHAT_LOOKUP_SPACE_RE = re.compile(r"\s+")
 
@@ -1231,16 +1301,18 @@ def generate_chat_reply_with_resample(
     user_input: str,
     avoid_replies: tuple[str, ...] = (),
     max_resamples: int = 2,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, float]:
     base_temperature = max(args.temperature, 1e-6)
     base_top_k = args.top_k
     base_seed = getattr(args, "seed", 0)
     chosen_reply: str = ""
     chosen_suffix: str = ""
     chosen_generated: str = ""
+    chosen_confidence: float = 0.0
     last_generated: str = ""
     last_suffix: str = ""
     last_reply: str = ""
+    last_confidence: float = 0.0
     for attempt in range(max_resamples + 1):
         if attempt > 0:
             torch.manual_seed(base_seed + 100 * attempt + 7)
@@ -1253,7 +1325,7 @@ def generate_chat_reply_with_resample(
             temperature = max(base_temperature * 2.2, 0.7)
             top_k = max(base_top_k, 24)
 
-        generated = generate_text(
+        generated, confidence = generate_text_tracked(
             model=model,
             tokenizer=tokenizer,
             prompt=prompt,
@@ -1285,6 +1357,7 @@ def generate_chat_reply_with_resample(
         last_generated = generated
         last_suffix = suffix
         last_reply = reply_text
+        last_confidence = confidence
         if not is_unsatisfactory_reply(
             reply_text,
             user_input=user_input,
@@ -1293,6 +1366,7 @@ def generate_chat_reply_with_resample(
             chosen_reply = reply_text
             chosen_suffix = suffix
             chosen_generated = generated
+            chosen_confidence = confidence
             break
     if not chosen_generated:
         if is_unsatisfactory_reply(
@@ -1306,17 +1380,19 @@ def generate_chat_reply_with_resample(
             )
             chosen_suffix = chosen_reply
             chosen_generated = chosen_reply
+            chosen_confidence = 0.0
         else:
             chosen_reply = last_reply
             chosen_suffix = last_suffix
             chosen_generated = last_generated
+            chosen_confidence = last_confidence
     if base_seed:
         torch.manual_seed(base_seed)
-    return chosen_reply, chosen_suffix, chosen_generated
+    return chosen_reply, chosen_suffix, chosen_generated, chosen_confidence
 
 
 @torch.no_grad()
-def generate_text(
+def generate_text_tracked(
     model: DecoderOnlyTransformer,
     tokenizer: Tokenizer,
     prompt: str,
@@ -1330,7 +1406,56 @@ def generate_text(
     min_new_chars_before_stop: int,
     device: torch.device,
     stop_sequences: tuple[str, ...] = (),
-) -> str:
+) -> tuple[str, float]:
+    """Like ``generate_text``, but also returns the mean probability the model
+    assigned to the tokens it chose, as a rough confidence signal.
+
+    The probability is computed under the *raw* (no temperature, no
+    repetition penalty, no blocked-id mask) softmax of the next-token
+    logits. This way a high temperature does not artificially deflate the
+    confidence value, and the score reflects the model's own beliefs.
+    """
+    text, probs = _run_generation(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        repetition_penalty=repetition_penalty,
+        repetition_window=repetition_window,
+        stop_at_period=stop_at_period,
+        stop_at_blank_line=stop_at_blank_line,
+        min_new_chars_before_stop=min_new_chars_before_stop,
+        device=device,
+        stop_sequences=stop_sequences,
+        track_probs=True,
+    )
+    if probs:
+        mean_conf = sum(probs) / len(probs)
+    else:
+        mean_conf = 0.0
+    return text, mean_conf
+
+
+@torch.no_grad()
+def _run_generation(
+    *,
+    model: DecoderOnlyTransformer,
+    tokenizer: Tokenizer,
+    prompt: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+    repetition_penalty: float,
+    repetition_window: int,
+    stop_at_period: bool,
+    stop_at_blank_line: bool,
+    min_new_chars_before_stop: int,
+    device: torch.device,
+    stop_sequences: tuple[str, ...] = (),
+    track_probs: bool = False,
+) -> tuple[str, list[float]]:
     tokens = tokenizer.encode(prompt)
     if not tokens:
         tokens = tokenizer.encode(" ")
@@ -1345,10 +1470,20 @@ def generate_text(
         min_new_chars_before_stop=min_new_chars_before_stop,
     )
 
+    chosen_probs: list[float] = []
+
     for _ in range(max_new_tokens):
         idx_cond = idx[:, -model.config.context_length :]
         logits, _ = model(idx_cond)
         next_token_logits = logits[:, -1, :]
+
+        # Snapshot the raw distribution before temperature / penalties /
+        # blocking, so the confidence reflects the model's own beliefs.
+        if track_probs:
+            raw_probs = torch.softmax(next_token_logits, dim=-1)
+        else:
+            raw_probs = None
+
         recent_tokens = (
             idx[0, -repetition_window:].tolist() if repetition_window > 0 else []
         )
@@ -1374,6 +1509,9 @@ def generate_text(
             probs = torch.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
 
+        if raw_probs is not None:
+            chosen_probs.append(float(raw_probs[0, int(next_token.item())].item()))
+
         idx = torch.cat((idx, next_token), dim=1)
         generated = tokenizer.decode(idx[0].tolist())
         suffix = generated_suffix(prompt, generated, tokenizer=tokenizer)
@@ -1382,7 +1520,41 @@ def generate_text(
         if should_stop_early(suffix, stop_args):
             break
 
-    return tokenizer.decode(idx[0].tolist())
+    return tokenizer.decode(idx[0].tolist()), chosen_probs
+
+
+def generate_text(
+    model: DecoderOnlyTransformer,
+    tokenizer: Tokenizer,
+    prompt: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+    repetition_penalty: float,
+    repetition_window: int,
+    stop_at_period: bool,
+    stop_at_blank_line: bool,
+    min_new_chars_before_stop: int,
+    device: torch.device,
+    stop_sequences: tuple[str, ...] = (),
+) -> str:
+    text, _ = _run_generation(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        repetition_penalty=repetition_penalty,
+        repetition_window=repetition_window,
+        stop_at_period=stop_at_period,
+        stop_at_blank_line=stop_at_blank_line,
+        min_new_chars_before_stop=min_new_chars_before_stop,
+        device=device,
+        stop_sequences=stop_sequences,
+        track_probs=False,
+    )
+    return text
 
 
 def generated_suffix(
@@ -1463,9 +1635,19 @@ def interactive_loop(
             memory_store = None
 
     memory_inject_limit = max(0, int(getattr(args, "memory_inject", DEFAULT_INJECT_LIMIT)))
+    language_guard = bool(getattr(args, "language_guard", True))
+    unknown_threshold = float(
+        getattr(
+            args,
+            "unknown_confidence_threshold",
+            DEFAULT_UNKNOWN_CONFIDENCE_THRESHOLD,
+        )
+    )
 
     history = ""
     recent_replies: list[str] = []
+    # Word the user wrote on a previous turn that we asked them to explain.
+    pending_unknown_word: str | None = None
     while True:
         try:
             user_input = input("> ")
@@ -1537,6 +1719,7 @@ def interactive_loop(
                 print(":remember <key> <value> [1-5] -> 記憶を追加（1-5は重要度、既定3）")
                 print(":forget <id>          -> id 指定で記憶を消す")
                 print(":forget-key <key>     -> key 指定で記憶を消す")
+            print("upgrade -> uv tool upgrade original-llm")
             print(f"carry-context -> {'on' if args.carry_context else 'off'}")
             if args.carry_context:
                 print(
@@ -1560,6 +1743,123 @@ def interactive_loop(
         prepared_user_input = prepare_chat_user_input(user_input, args)
         lookup_text = normalize_chat_lookup_text(prepared_user_input)
         avoid_replies = tuple(recent_replies[-3:])
+
+        # 1) Hard-coded guard: pure non-Japanese input gets the "Japanese only"
+        #    reply, no matter what the model would have said.
+        if (
+            language_guard
+            and args.user_label is not None
+            and args.reply_label is not None
+            and is_non_japanese_input(prepared_user_input)
+        ):
+            reply_text = NON_JAPANESE_GUARD_REPLY
+            pending_unknown_word = None
+            print()
+            if show_prompt_output:
+                guard_prompt = build_interactive_prompt(
+                    user_input=prepared_user_input,
+                    history=history,
+                    args=args,
+                    tokenizer=tokenizer,
+                    context_length=model.config.context_length,
+                )
+                print_block("prompt", guard_prompt)
+                print()
+                print_block("output", reply_text)
+            else:
+                print(f"{role_prompt(args.reply_label)}{reply_text}".rstrip())
+            print()
+            recent_replies.append(reply_text)
+            recent_replies = recent_replies[-5:]
+            continue
+
+        # 2) If the previous turn ended with us asking "what's that?", treat
+        #    this turn as the user's explanation (or retraction).
+        if (
+            memory_store is not None
+            and pending_unknown_word is not None
+            and args.user_label is not None
+            and args.reply_label is not None
+        ):
+            if looks_like_typo_correction(prepared_user_input):
+                # Drop the pending word. Fall through to normal handling so
+                # the user can keep talking right away.
+                pending_unknown_word = None
+            else:
+                explanation = prepared_user_input.strip()
+                key = f"{UNKNOWN_MEMORY_KEY_PREFIX}{pending_unknown_word}"
+                stored = memory_store.bump_or_add(key, explanation)
+                rotation = len(recent_replies)
+                template = UNKNOWN_WORD_LEARNED_TEMPLATES[
+                    rotation % len(UNKNOWN_WORD_LEARNED_TEMPLATES)
+                ]
+                reply_text = template.format(word=pending_unknown_word)
+                print()
+                if show_prompt_output:
+                    print_block(
+                        "prompt",
+                        f"(unknown-word follow-up: stored '{stored.key}'='{stored.value}',"
+                        f" importance={stored.importance})",
+                    )
+                    print()
+                    print_block("output", reply_text)
+                else:
+                    print(f"{role_prompt(args.reply_label)}{reply_text}".rstrip())
+                print()
+                pending_unknown_word = None
+                if args.carry_context:
+                    history = append_chat_history(
+                        history=history,
+                        user_input=prepared_user_input,
+                        reply_text=reply_text,
+                        user_label=args.user_label,
+                        reply_label=args.reply_label,
+                        tokenizer=tokenizer,
+                        context_length=model.config.context_length,
+                        max_turns=getattr(args, "max_history_turns", None),
+                    )
+                recent_replies.append(reply_text)
+                recent_replies = recent_replies[-5:]
+                continue
+
+        # 3) "How do I update?" question gets a curated answer with the
+        #    actual upgrade command. The model shouldn't be inventing CLI.
+        if (
+            args.user_label is not None
+            and args.reply_label is not None
+            and looks_like_update_question(prepared_user_input)
+        ):
+            reply_text = UPDATE_GUIDE_REPLY
+            print()
+            if show_prompt_output:
+                upgrade_prompt = build_interactive_prompt(
+                    user_input=prepared_user_input,
+                    history=history,
+                    args=args,
+                    tokenizer=tokenizer,
+                    context_length=model.config.context_length,
+                )
+                print_block("prompt", upgrade_prompt)
+                print()
+                print_block("output", reply_text)
+            else:
+                print(f"{role_prompt(args.reply_label)}{reply_text}".rstrip())
+            print()
+            if args.carry_context:
+                history = append_chat_history(
+                    history=history,
+                    user_input=prepared_user_input,
+                    reply_text=reply_text,
+                    user_label=args.user_label,
+                    reply_label=args.reply_label,
+                    tokenizer=tokenizer,
+                    context_length=model.config.context_length,
+                    max_turns=getattr(args, "max_history_turns", None),
+                )
+            recent_replies.append(reply_text)
+            recent_replies = recent_replies[-5:]
+            continue
+
         direct_reply = curated_short_reply(
             prepared_user_input,
             avoid_replies=avoid_replies,
@@ -1660,7 +1960,7 @@ def interactive_loop(
                 model.config.context_length,
             )
 
-        reply_text, suffix, generated = generate_chat_reply_with_resample(
+        reply_text, suffix, generated, confidence = generate_chat_reply_with_resample(
             model=model,
             tokenizer=tokenizer,
             prompt=prompt,
@@ -1669,6 +1969,32 @@ def interactive_loop(
             user_input=prepared_user_input,
             avoid_replies=avoid_replies,
         )
+
+        # If the user typed a short term that doesn't match anything in
+        # memory and the model couldn't muster real confidence, ask them.
+        memory_known = (
+            memory_store is not None
+            and memory_store.contains_word(prepared_user_input)
+        )
+        single_word = looks_like_single_word(prepared_user_input)
+        if show_prompt_output:
+            print(
+                f"(confidence={confidence:.3f} "
+                f"single_word={single_word} memory_known={memory_known})"
+            )
+        if (
+            memory_store is not None
+            and single_word
+            and not memory_known
+            and confidence < unknown_threshold
+            and args.reply_label is not None
+        ):
+            rotation = len(recent_replies)
+            template = UNKNOWN_WORD_QUESTION_TEMPLATES[
+                rotation % len(UNKNOWN_WORD_QUESTION_TEMPLATES)
+            ]
+            reply_text = template.format(word=prepared_user_input)
+            pending_unknown_word = prepared_user_input
         print()
         if show_prompt_output or args.user_label is None or args.reply_label is None:
             print_block("prompt", prompt)

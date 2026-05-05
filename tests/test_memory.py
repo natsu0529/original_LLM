@@ -87,6 +87,55 @@ class MemoryStoreCrudTests(unittest.TestCase):
         self.assertEqual(ordered[2].id, a.id)
 
 
+class MemoryStoreBumpOrAddTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = MemoryStore(":memory:")
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def test_bump_or_add_creates_first_entry_at_min_importance(self) -> None:
+        entry = self.store.bump_or_add("word:ぴえん", "1")
+        self.assertEqual(entry.key, "word:ぴえん")
+        self.assertEqual(entry.value, "1")
+        self.assertEqual(entry.importance, MIN_IMPORTANCE)
+
+    def test_bump_or_add_raises_importance_and_updates_value(self) -> None:
+        first = self.store.bump_or_add("word:ぴえん", "1")
+        second = self.store.bump_or_add("word:ぴえん", "悲しい時の感情")
+        self.assertEqual(second.id, first.id)
+        self.assertEqual(second.value, "悲しい時の感情")
+        self.assertEqual(second.importance, MIN_IMPORTANCE + 1)
+
+    def test_bump_or_add_caps_importance(self) -> None:
+        entry = self.store.bump_or_add("word:foo", "v")
+        for _ in range(20):
+            entry = self.store.bump_or_add("word:foo", "v")
+        self.assertEqual(entry.importance, MAX_IMPORTANCE)
+
+
+class MemoryStoreContainsWordTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.store = MemoryStore(":memory:")
+        self.store.add("name", "夏樹")
+        self.store.add("word:ぴえん", "悲しい時の感情")
+
+    def tearDown(self) -> None:
+        self.store.close()
+
+    def test_finds_value_match(self) -> None:
+        self.assertTrue(self.store.contains_word("夏樹"))
+
+    def test_finds_substring_in_value(self) -> None:
+        self.assertTrue(self.store.contains_word("ぴえん"))
+
+    def test_returns_false_when_unknown(self) -> None:
+        self.assertFalse(self.store.contains_word("ピッツバーグ"))
+
+    def test_empty_query_returns_false(self) -> None:
+        self.assertFalse(self.store.contains_word(""))
+
+
 class MemoryStoreRelevanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = MemoryStore(":memory:")

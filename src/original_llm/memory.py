@@ -196,11 +196,73 @@ class MemoryStore:
         ).fetchone()
         return _row_to_entry(row) if row else None
 
+    def find_by_key(self, key: str) -> list[MemoryEntry]:
+        rows = self._conn.execute(
+            "SELECT * FROM memory WHERE key = ? "
+            "ORDER BY importance DESC, updated_at DESC, id DESC",
+            (key.strip(),),
+        ).fetchall()
+        return [_row_to_entry(row) for row in rows]
+
+    def bump_or_add(
+        self,
+        key: str,
+        value: str,
+        *,
+        importance_delta: int = 1,
+        max_importance: int = MAX_IMPORTANCE,
+    ) -> MemoryEntry:
+        """If an entry with ``key`` already exists, raise its importance by
+        ``importance_delta`` (capped at ``max_importance``) and update value /
+        timestamp. Otherwise insert a new entry at importance ``MIN_IMPORTANCE``.
+
+        The returned entry is the post-update / newly inserted row.
+        """
+        existing = self.find_by_key(key)
+        if not existing:
+            return self.add(
+                key,
+                value,
+                importance=max(MIN_IMPORTANCE, min(max_importance, MIN_IMPORTANCE)),
+            )
+        head = existing[0]
+        new_importance = min(max_importance, head.importance + importance_delta)
+        updated = self.update(
+            head.id,
+            value=value,
+            importance=new_importance,
+        )
+        assert updated is not None
+        return updated
+
     def list_all(self) -> list[MemoryEntry]:
         rows = self._conn.execute(
             "SELECT * FROM memory ORDER BY importance DESC, updated_at DESC, id DESC"
         ).fetchall()
         return [_row_to_entry(row) for row in rows]
+
+    def contains_word(self, word: str) -> bool:
+        """True if ``word`` appears as (or inside) any stored key or value.
+
+        Used by the unknown-word detector to decide whether the input is
+        already covered by existing memory entries.
+        """
+        target = word.strip()
+        if not target:
+            return False
+        rows = self._conn.execute("SELECT key, value FROM memory").fetchall()
+        for row in rows:
+            key = row["key"] or ""
+            value = row["value"] or ""
+            if target == key or target == value:
+                return True
+            if target in key or target in value:
+                return True
+            if key and key in target:
+                return True
+            if value and value in target:
+                return True
+        return False
 
     def select_relevant(
         self,

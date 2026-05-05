@@ -637,6 +637,21 @@ def parse_args(
         help="Maximum number of memory entries injected into the prompt prefix.",
     )
     parser.add_argument(
+        "--language-guard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reply with the canned 'I only speak Japanese' line when the "
+             "input has no Japanese characters.",
+    )
+    parser.add_argument(
+        "--unknown-confidence-threshold",
+        type=float,
+        default=0.55,
+        help="Confidence (mean chosen-token probability) below which a "
+             "single-word, never-seen-before input gets the 'what's that?' "
+             "follow-up that prompts the user to teach us. Default 0.55.",
+    )
+    parser.add_argument(
         "--show-meta",
         action="store_true",
         help="Print checkpoint metadata before generation.",
