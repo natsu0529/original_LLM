@@ -129,6 +129,7 @@ class RetrievalResolutionTests(unittest.TestCase):
 
             repo_data = Path(__file__).resolve().parents[1] / "data"
             preferred_order = (
+                repo_data / "chat_seed_friend_natural_v4",
                 repo_data / "chat_seed_friend_natural_v3",
                 repo_data / "chat_seed_friend_casual_mix_v1",
                 repo_data / "chat_seed_real_persona_casual_v1",

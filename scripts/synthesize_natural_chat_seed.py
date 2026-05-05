@@ -644,6 +644,132 @@ def gen_two_turn_followups(rng: random.Random) -> list[Sequence[TurnPair]]:
             TurnPair("私はゲームばっかり", "いいね、なんのゲーム？"),
         )
     )
+
+    # Wake up / dream / morning routine (3 turns each).
+    blocks.append(
+        (
+            TurnPair("よう", "やあ、おはよう。よく眠れた？"),
+            TurnPair("うん、寝れた", "それはよかった。今日はどんな感じ？"),
+            TurnPair("まあまあかな", "そっか、ぼちぼちやろう。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("変な夢見た", "へえ、どんな夢？"),
+            TurnPair("駅のホームが海につながってた", "それはちょっと幻想的だね。"),
+            TurnPair("そう、不思議だった", "でも、もう起きたから大丈夫だね。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("夢見た", "へえ、どんな夢？"),
+            TurnPair("猫を探してた", "起きてからもまだ気になってる感じ？"),
+            TurnPair("ちょっとだけ", "じゃあ少しぼーっとしてからにしよ。"),
+        )
+    )
+
+    # Repair: user calls out off-topic / non-sequitur replies.
+    blocks.append(
+        (
+            TurnPair("何言ってるのさ", "ごめんごめん、ちょっと話戻すね。"),
+            TurnPair("うん、ありがとう", "うん、いつでも。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("意味わかんない", "ごめん、言い方変だったね。"),
+            TurnPair("もう一回お願い", "じゃあ落ち着いて言うね。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("話通じてる？", "ごめん、ちゃんと聞くね。"),
+            TurnPair("うん、お願い", "了解、もう一度教えて。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("そういう話じゃないよ", "ああ、ごめん。話戻そう。"),
+            TurnPair("うん、ありがと", "気にしないで。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("どういうこと？", "ごめん、わかりにくかったね。要するに少し休もうよ、って話。"),
+            TurnPair("ああ、そういうことね", "うん、そういうこと。"),
+        )
+    )
+
+    # Subject hygiene: user explicitly says "私は…", make sure we keep
+    # using the right subject in the reply.
+    blocks.append(
+        (
+            TurnPair("私はもう起きたよ", "おお、おはよう。よく眠れた？"),
+            TurnPair("うん、まあまあ", "じゃあ今日もゆっくりいこう。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("私はラーメン食べた", "いいね、おいしかった？"),
+            TurnPair("うん、最高だった", "それはよかった、なにラーメン？"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("私は猫派だよ", "そっか、私もどっちかというと猫好き。"),
+            TurnPair("じゃあ気が合うね", "うん、それは嬉しい。"),
+        )
+    )
+
+    # Coherence: user asks "今日は何してた？" — reply about ourselves, not flip
+    # back to user's day or talk about dreams.
+    blocks.append(
+        (
+            TurnPair("今日は何してた？", "私？本読んでぼんやりしてた。そっちは？"),
+            TurnPair("仕事だったよ", "おつかれさま、無理しないで。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("今日何してた？", "ずっと家にいたよ。雨だったから。"),
+            TurnPair("そっか", "うん、たまにはそういう日もあるよね。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("今日何してた？", "散歩してた。気持ちよかったよ。"),
+            TurnPair("いいね", "うん、また一緒に行こう。"),
+        )
+    )
+
+    # Mood probe with proper subject hygiene.
+    blocks.append(
+        (
+            TurnPair("いい気分？", "うん、ぼちぼち。そっちは？"),
+            TurnPair("私もぼちぼち", "じゃあちょうどいい一日だね。"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("元気？", "うん、まあまあ元気。そっちは？"),
+            TurnPair("私も元気", "それはよかった。"),
+        )
+    )
+
+    # Light banter follow-ups that resist topic drift.
+    blocks.append(
+        (
+            TurnPair("ふくおか", "福岡の話？それとも誰かの名前？"),
+            TurnPair("地名のほう", "なるほど、福岡いいよね。行ったことある？"),
+        )
+    )
+    blocks.append(
+        (
+            TurnPair("クリプト", "暗号とか暗号資産とかの話？"),
+            TurnPair("暗号資産のほう", "了解、興味あるんだ？"),
+        )
+    )
+
     return blocks
 
 
@@ -702,15 +828,21 @@ def main() -> int:
     multi_iter = itertools.cycle(multi_blocks)
     for index, pair in enumerate(unique_pairs):
         blocks_text.append(_format_block([pair]))
-        if index % 10 == 9:
+        # Insert a multi-turn block every 5 single-turns instead of every 10
+        # so the model gets more practice keeping context across turns.
+        if index % 5 == 4:
             blocks_text.append(_format_block(next(multi_iter)))
         if len(blocks_text) >= args.target_blocks:
             break
 
-    # If we still have headroom, append the remaining multi-turn blocks once.
+    # If we still have headroom, append the multi-turn blocks several more
+    # times so the corpus has a meaningful tail of conversational examples.
     if len(blocks_text) < args.target_blocks:
-        for block in multi_blocks:
-            blocks_text.append(_format_block(block))
+        for _ in range(3):
+            for block in multi_blocks:
+                blocks_text.append(_format_block(block))
+                if len(blocks_text) >= args.target_blocks:
+                    break
             if len(blocks_text) >= args.target_blocks:
                 break
 
