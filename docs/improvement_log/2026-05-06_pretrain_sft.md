@@ -82,17 +82,40 @@ best step = 1400, **valid_loss = 1.608**。
 
 5 wins / 1 loss / 残り tied。subject-aware reply (家にいる→私もぼちぼち, 私はもう起きた→そっちは？), broken 日本語の解消, repair turn が動くようになった。
 
-## 配布
+## 配布判断: **v0.3.0 リリース見送り**
 
-`v0.3.0` として:
+slim 化と build までは行ったが、`carry-context` on / max-history-turns=2 の本番設定で
+本物の対話を駆動したところ、probe 単発では出ていなかった崩れが多数再発した:
 
-- `dazai-friend-sft-v6-768x12/best.pt` を slim (358 MiB)
-- `cli.py` の `preferred_chat_checkpoint()` 先頭に `dazai-friend-sft-v6-*/best.pt` を追加
-- retrieval corpus は v5 と同じ (`chat_seed_friend_natural_v5/`) なので変更なし
-- 87 テスト pass
+```
+私: 家にいるよ、あなたは？
+相手: うん、それが正解。           ← 質問に答えていない
+私: 大丈夫だよ、少し遊ぼうよ
+相手: 食べてないよ。変な話にそれただけ。  ← off-topic
+私: えっと、どゆこと？
+相手: 私もやってた？               ← repair 不発
+私: え？
+相手: 引っ越したばっかで。早く買わないと。 ← 前ターン引きずり (v0.2.0 の元バグ)
+私: 今日は何してた？
+相手: ごめん、変な言い方だった…   ← repair 誤発火
+```
 
-## 残課題
+probe は単発の 1 ターンしか見ないので「家にいるよ、あなたは？」→「私もぼちぼち。」と良い応答が出るが、
+履歴に直前 2 ターンを足した瞬間に context が混乱して崩れる。
 
-- 言語事前確率は底上げされたが、chat 文脈の coherence (多ターン記憶) はまだ弱い。
-  - 例: 「映画でも見ようかな」→「映画館で…映画館は…」と単語反復が出る
-- corpus 量で殴る方向と並行して、context 拡張 (768 へ) や ETM (early stopping) を試す価値あり
+仮説: stage 1 で言語事前確率は底上げされたが、SFT corpus (1.9MB) の中で
+本当の意味で「直前 2 ターン履歴 + 新規入力 → 文脈整合的な相手返答」を学ぶ multi-turn block の量が足りていない。
+3925 ブロックあるが、ほとんどは 2 ターンで完結し、3 ターン目以降の文脈整合は学習されていない。
+
+## 残課題と次の一手
+
+- multi-turn corpus を **3 ターン以上の対話** で大幅増やす（現状はほぼ 2 ターン pair）
+- もしくは context_length を 768 へ拡張して履歴ウィンドウを増やす
+- どちらをしても overfit 速度は早いので、stage 1 の事前学習量も並行して増やす必要がある
+
+ロールバック内容:
+- pyproject.toml を 0.2.1 に戻す
+- `cli.py preferred_chat_checkpoint()` から `dazai-friend-sft-v6-*` を削除
+- `src/train.py --reset-step` フラグは保持（resume + 短い max_steps の silent failure を直すバグ修正）
+- `scripts/probe_chat_checkpoint.py` は保持（今後のデバッグに使う）
+- `docs/improvement_log/2026-05-06_pretrain_sft.md` はこのファイルとして保持（学びを残す）
