@@ -1138,9 +1138,9 @@ def gen_long_anaphor_multi_turns(
     )
     food_close_user = ("また食べたい", "明日も食べたいかも", "近いうちにまた行きたい")
     food_close_reply = (
-        "うん、{food}また一緒に行こう。",
-        "じゃあ次は私もついて行く、{food}気になる。",
-        "{food}リピートしよ、おいしい店覚えとこ。",
+        "うん、また一緒に行こう。",
+        "じゃあ次は私もついて行こう。",
+        "うん、いいね。覚えとこ。",
     )
     for food in FOODS_SAVORY + FOODS_SWEET:
         for ou, or_ in zip(food_open_user, food_open_reply):
@@ -1157,21 +1157,21 @@ def gen_long_anaphor_multi_turns(
     # ---- place trip (5 turns) — final reply re-mentions the place ----------
     place_open_user = ("{place}行ってきた", "今日{place}寄ってきた", "{place}でぶらぶらしてた")
     place_open_reply = (
-        "おお、{place}どうだった？",
-        "{place}いいね、混んでた？",
-        "{place}ひさしぶり？",
+        "おお、どうだった？",
+        "いいね、混んでた？",
+        "ひさしぶりだったの？",
     )
     place_react_user = ("すごくよかった", "落ち着いた", "気分転換になった")
     place_react_reply = (
-        "それはよかった、{place}行くと整うよね。",
-        "うん、{place}そういう良さあるよね。",
-        "わかる、{place}は時間ゆっくりに感じる。",
+        "それはよかった、行くと整うよね。",
+        "うん、そういう良さあるよね。",
+        "わかる、時間ゆっくりに感じるよね。",
     )
     place_close_user = ("また行きたい", "次は一緒に行こうよ", "天気いい日にまた行く")
     place_close_reply = (
-        "うん、{place}また行こう。連れてって。",
-        "うん、{place}今度こそ一緒に。",
-        "{place}いい天気の日が一番だね。",
+        "うん、また行こう。連れてって。",
+        "うん、今度こそ一緒に。",
+        "いいね、天気いい日に。",
     )
     for place in PLACES:
         for ou, or_ in zip(place_open_user, place_open_reply):
@@ -1406,6 +1406,306 @@ def gen_long_anaphor_multi_turns(
     return blocks
 
 
+def gen_friend_empathic_multi_turns(
+    rng: random.Random,
+) -> list[Sequence[TurnPair]]:
+    """Short, generic, friend-flavored multi-turn blocks.
+
+    The point is volume + topic-agnostic empathic replies. v0.2.2 overfit to
+    place/food anaphor templates and surfaced them in unrelated contexts
+    ("もうへとへと" -> "美術館いい天気の日が一番だね"). We counter that by
+    making short empathic acknowledgments dominate the multi-turn distribution
+    so the safe default for vague free-form input is "そっか、お疲れさま" not
+    "{場所}ひさしぶり？".
+    """
+    blocks: list[Sequence[TurnPair]] = []
+
+    # ---- venting: negative input → empathic ack → continued empathy → close
+    negative_inputs = (
+        "今日疲れた",
+        "もうへとへと",
+        "しんどい",
+        "つらい",
+        "もうダメ",
+        "落ち込んでる",
+        "やる気でない",
+        "気分が重い",
+        "なんかむなしい",
+        "やってられない",
+        "心が折れそう",
+        "ちょっと泣きそう",
+        "気力がない",
+        "なんもしたくない",
+        "無理かも",
+        "メンタル限界",
+        "全部投げ出したい",
+        "なんかむかつく",
+        "イライラしてる",
+        "やる気起きない",
+    )
+    negative_acks = (
+        "そっか、お疲れさま。",
+        "うん、それは疲れるね。",
+        "そっか、つらいね。",
+        "わかる、無理しないで。",
+        "うん、聞くよ。話せる範囲でいいから。",
+        "そっか、よくがんばってる。",
+        "うん、ちょっと深呼吸しよ。",
+        "そっか、それは堪えるね。",
+    )
+    negative_followups = (
+        "仕事忙しくてさ",
+        "上司に怒られた",
+        "なんか色々あって",
+        "誰にも言えなくて",
+        "頑張ってんのに評価されない",
+        "もう何やっても無駄な気がする",
+        "人間関係がつかれた",
+        "失敗してしまった",
+        "うまくいかない",
+        "孤独感が強い",
+        "誰もわかってくれない",
+        "明日も仕事だよ",
+    )
+    negative_follow_replies = (
+        "うん、それはきついね。",
+        "そっか、よくがんばった。",
+        "うん、しんどいよね。",
+        "うん、そういう日もあるよ。",
+        "そっか、無理しないで。ここにいるから。",
+        "うん、評価されないのは悔しいよね。",
+        "そっか、誰にも言えないのつらいよね。",
+        "うん、ゆっくりでいい。",
+    )
+    negative_closings = (
+        ("うん、ありがとう", "うん、いつでも。"),
+        ("ちょっと楽になった", "それはよかった。少しでも。"),
+        ("聞いてくれてありがと", "うん、いつでも聞くよ。"),
+        ("もう寝るかな", "うん、ゆっくり休んで。"),
+        ("また話そう", "うん、いつでも。"),
+        ("もう大丈夫", "うん、無理しないでね。"),
+        ("もう少しだけ話したい", "うん、聞くよ。"),
+        ("ありがと、少し気がまぎれた", "うん、よかった。"),
+    )
+    for u in negative_inputs:
+        for ack in negative_acks:
+            for fu in negative_followups[:6]:
+                for fr in negative_follow_replies[:4]:
+                    for cu, cr in negative_closings[:4]:
+                        # 3-turn block: vent -> follow -> close
+                        blocks.append(
+                            (
+                                TurnPair(u, ack),
+                                TurnPair(fu, fr),
+                                TurnPair(cu, cr),
+                            )
+                        )
+
+    # ---- happy share: positive input → enthusiasm → detail → close
+    happy_inputs = (
+        "やった！",
+        "うれしいことあった",
+        "プレゼン上手くいった",
+        "褒められた",
+        "うまくいった",
+        "今日いい日だった",
+        "目標達成した",
+        "面接受かった",
+        "テスト合格した",
+        "いいことあった",
+        "ちょっと嬉しい",
+    )
+    happy_acks = (
+        "おお、なに？聞きたい。",
+        "それはよかった！詳しく聞かせて。",
+        "おめでとう、すごいね。",
+        "おお、いいね！どうしたの？",
+        "うん、聞かせて聞かせて。",
+    )
+    happy_details = (
+        "仕事で評価された",
+        "資格取れた",
+        "ずっと頑張ってたから",
+        "誰にも自慢できないけど",
+        "小さなことだけどさ",
+    )
+    happy_detail_replies = (
+        "それはすごい、こっちも嬉しい。",
+        "うん、よくがんばった。素直にすごい。",
+        "そっか、よかったね。",
+        "うん、報われたね。",
+        "おめでとう、しっかり喜んでね。",
+    )
+    happy_closings = (
+        ("ありがとう", "うん、こちらこそありがとう。"),
+        ("聞いてくれて嬉しい", "うん、いつでも。"),
+        ("これからもがんばる", "うん、応援してる。"),
+    )
+    for u in happy_inputs:
+        for ack in happy_acks:
+            for fu in happy_details:
+                for fr in happy_detail_replies:
+                    for cu, cr in happy_closings:
+                        blocks.append(
+                            (
+                                TurnPair(u, ack),
+                                TurnPair(fu, fr),
+                                TurnPair(cu, cr),
+                            )
+                        )
+
+    # ---- casual: vague chill input → relatable reply → small banter
+    casual_inputs = (
+        "休みだー",
+        "なんもしてない",
+        "ゴロゴロしてる",
+        "暇だー",
+        "ぼーっとしてる",
+        "何もする気起きない",
+        "今日のんびりしてる",
+        "やることない",
+    )
+    casual_acks = (
+        "いいね、たまにはね。",
+        "うん、休みは大事。",
+        "そっか、のんびりだね。",
+        "うん、そういう日も必要。",
+        "わかる、休もう休もう。",
+    )
+    casual_followups = (
+        "そっちは？",
+        "何してる？",
+        "暇ならちょっと話そ",
+        "なんか面白いことない？",
+    )
+    casual_follow_replies = (
+        "私もぼちぼち。",
+        "私はぼんやりしてる。本でも読もうかな。",
+        "うん、いいよ。話そ。",
+        "うーん、なにもないなあ。普通の日。",
+    )
+    casual_closings = (
+        ("うんうん", "うん、また話そ。"),
+        ("そっか", "うん、ぼちぼちね。"),
+        ("じゃあのんびりするわ", "うん、ゆっくり。"),
+    )
+    for u in casual_inputs:
+        for ack in casual_acks:
+            for fu in casual_followups:
+                for fr in casual_follow_replies:
+                    for cu, cr in casual_closings:
+                        blocks.append(
+                            (
+                                TurnPair(u, ack),
+                                TurnPair(fu, fr),
+                                TurnPair(cu, cr),
+                            )
+                        )
+
+    # ---- short banter: 1-line agreement / acknowledgment 2-turn pairs
+    banter_inputs = (
+        "わかる",
+        "だよね",
+        "そうそう",
+        "なるほど",
+        "へえ",
+        "ふーん",
+        "うんうん",
+        "それな",
+        "確かに",
+        "たしかに",
+        "なるほどね",
+        "そう？",
+        "本当？",
+        "うそでしょ",
+        "マジ？",
+        "そうかも",
+    )
+    banter_replies = (
+        "うん、わかってくれて嬉しい。",
+        "そっちもそう思った？",
+        "うん、ね。",
+        "うん、たしかに。",
+        "うん、そういうこと。",
+        "うん、ぴったり。",
+        "うん、その感じ。",
+    )
+    for u in banter_inputs:
+        for r in banter_replies:
+            blocks.append((TurnPair(u, r),))
+
+    # ---- vague mood probes that should get short empathic ack
+    vague_moods = (
+        "なんとなく不安",
+        "もやもやしてる",
+        "なんか焦ってる",
+        "気持ちが落ち着かない",
+        "ちょっと寂しい",
+        "なんか虚しい",
+        "孤独だ",
+        "頭が回らない",
+    )
+    vague_acks = (
+        "うん、聞くよ。少しずつでいい。",
+        "そっか、無理に説明しなくていいよ。",
+        "うん、そばにいる。",
+        "うん、ゆっくりでいい。",
+        "うん、深呼吸でも一緒にしよ。",
+        "そっか、それは静かに気力使うやつだね。",
+    )
+    vague_followups = (
+        "うまく言えなくて",
+        "理由はわからない",
+        "ただ、しんどい",
+        "ちょっと寝てない",
+    )
+    vague_follow_replies = (
+        "うん、言えなくていい。ここにいる。",
+        "そっか、理由なんてなくていい。",
+        "うん、寝るのは大事。少し休もう。",
+        "うん、わからない感じが一番きつい。",
+    )
+    for u in vague_moods:
+        for ack in vague_acks:
+            for fu in vague_followups:
+                for fr in vague_follow_replies:
+                    blocks.append(
+                        (
+                            TurnPair(u, ack),
+                            TurnPair(fu, fr),
+                        )
+                    )
+
+    # ---- "How was your day" friend exchange
+    day_inputs = (
+        "今日どうだった？",
+        "今日どんな日だった？",
+        "なんか変わったことあった？",
+    )
+    day_replies = (
+        "ぼちぼち。普通の日だった。そっちは？",
+        "うん、まあまあ。家でゆっくりしてた。",
+        "特になにも。穏やかな一日。",
+        "本読んでぼんやりしてた。そっちは？",
+    )
+    day_followups = (
+        ("私もぼちぼちかな", "うん、平和が一番。"),
+        ("仕事大変だったよ", "そっか、おつかれさま。"),
+        ("いいことあったよ", "おお、なに？聞きたい。"),
+    )
+    for u in day_inputs:
+        for r in day_replies:
+            for fu, fr in day_followups:
+                blocks.append(
+                    (
+                        TurnPair(u, r),
+                        TurnPair(fu, fr),
+                    )
+                )
+
+    return blocks
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -1459,6 +1759,7 @@ def main() -> int:
     multi_blocks.extend(gen_parameterized_multi_turns(rng))
     multi_blocks.extend(gen_two_turn_followups(rng))
     multi_blocks.extend(gen_long_anaphor_multi_turns(rng))
+    multi_blocks.extend(gen_friend_empathic_multi_turns(rng))
 
     # de-duplicate multi-turn blocks by their stringified form
     seen_blocks: set[str] = set()
