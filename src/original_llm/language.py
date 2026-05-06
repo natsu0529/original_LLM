@@ -75,12 +75,20 @@ def is_non_japanese_input(text: str) -> bool:
 # flow should not trigger.
 _SENTENCE_TAIL_FORMS: tuple[str, ...] = (
     "です", "ます", "だよ", "だね", "だな", "かな",
-    "だ", "ね", "よ", "な", "か", "の",
+    "だ", "ね", "よ", "な", "か", "の", "さ", "わ", "ぞ", "ぜ", "ー",
+)
+
+# Verbal endings that indicate the input is a clause / verb phrase rather
+# than a noun term. Checked after stripping a single optional sentence-final
+# particle so e.g. "遅くてさ" still reads as ending in "て".
+_VERBAL_TAILS: tuple[str, ...] = (
+    "て", "た", "ない", "たい", "てる", "てた",
+    "ます", "ました", "ません", "ません",
 )
 
 # Particles that strongly suggest a multi-word sentence anywhere in the text.
 _SENTENCE_PARTICLE_PATTERNS: tuple[str, ...] = (
-    "は", "が", "を", "に", "へ", "で", "と", "から", "まで",
+    "は", "が", "を", "に", "へ", "で", "と", "から", "まで", "の",
 )
 
 
@@ -101,6 +109,16 @@ def looks_like_single_word(text: str, *, max_chars: int = 12) -> bool:
     # treat it as a sentence rather than a noun.
     for tail in _SENTENCE_TAIL_FORMS:
         if cleaned.endswith(tail) and len(cleaned) > len(tail):
+            return False
+    # Verb-phrase endings: even after a stray sentence particle ("遅くてさ"),
+    # the remaining stem usually ends in te/ta/nai/tai. That's a clause too.
+    stem = cleaned
+    for tail in ("さ", "ね", "よ", "な"):
+        if stem.endswith(tail) and len(stem) > len(tail) + 1:
+            stem = stem[: -len(tail)]
+            break
+    for tail in _VERBAL_TAILS:
+        if stem.endswith(tail) and len(stem) > len(tail) + 1:
             return False
     # If there's a structural particle inside, it's a clause: "今日は天気が…".
     interior = cleaned[1:-1] if len(cleaned) > 2 else ""

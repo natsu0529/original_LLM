@@ -65,6 +65,11 @@ UNKNOWN_WORD_LEARNED_TEMPLATES: tuple[str, ...] = (
 # coherent replies for known phrases sit well above 0.4 mean prob.
 DEFAULT_UNKNOWN_CONFIDENCE_THRESHOLD = 0.55
 
+# Tokenization-based unknown-word signal: if a short input gets split into
+# nearly one-token-per-character, SentencePiece never saw it as a unit during
+# training, so we treat it as unknown regardless of generation confidence.
+DEFAULT_UNKNOWN_TOKEN_RATIO = 0.7
+
 # Memory key prefix used when storing words the user introduced through the
 # unknown-word teaching flow. Keeps them visually distinct from explicit
 # ``:remember`` entries.
@@ -1119,6 +1124,13 @@ def select_direct_chat_reply(
         min_length = min(len(query_lookup_text), len(candidate.lookup_text))
         if common_length != min_length:
             continue
+        # Tiny templates (length 1) win against any query containing that
+        # character, e.g. "ぴえん" matching "え". Reject when the overlap is
+        # too small a fraction of the query — the unknown-word flow should
+        # take over instead.
+        required_overlap = max(2, (len(query_lookup_text) * 3 + 4) // 5)
+        if common_length < required_overlap:
+            continue
         reply = candidate.last_reply_text
         if not reply:
             continue
@@ -2085,11 +2097,14 @@ def interactive_loop(
                 f"(confidence={confidence:.3f} "
                 f"single_word={single_word} memory_known={memory_known})"
             )
+        token_ids = tokenizer.encode(prepared_user_input) if single_word else []
+        token_ratio = len(token_ids) / max(1, len(prepared_user_input))
+        looks_unfamiliar = token_ratio >= DEFAULT_UNKNOWN_TOKEN_RATIO
         if (
             memory_store is not None
             and single_word
             and not memory_known
-            and confidence < unknown_threshold
+            and (confidence < unknown_threshold or looks_unfamiliar)
             and args.reply_label is not None
         ):
             rotation = len(recent_replies)
