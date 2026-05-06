@@ -109,6 +109,7 @@ def resolve_checkpoint(
 def preferred_chat_checkpoint() -> Path | None:
     checkpoint_root = REPO_ROOT / "checkpoints"
     patterns = (
+        "dazai-friend-sft-v6-*/best.pt",
         "dazai-friend-natural-v5-*/best.pt",
         "dazai-friend-natural-v4-*/best.pt",
         "dazai-friend-natural-v3-*/best.pt",

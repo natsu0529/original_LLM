@@ -82,7 +82,37 @@ best step = 1400, **valid_loss = 1.608**。
 
 5 wins / 1 loss / 残り tied。subject-aware reply (家にいる→私もぼちぼち, 私はもう起きた→そっちは？), broken 日本語の解消, repair turn が動くようになった。
 
-## 配布判断: **v0.3.0 リリース見送り**
+## v0.2.2 として最終リリース
+
+最初の試行（このログ前半）は v5 corpus のままで SFT して見送ったが、その後:
+
+1. multi-turn corpus を `chat_seed_friend_natural_v6` に拡張（4-6 ターン anaphor block を ~1857 追加）
+2. SFT 再走 → best valid 0.868 @ step 2200（v0.2.1 1.441 から大幅改善）
+3. 対話デバッグで「家にいるよ、あなたは？」など主訴ケースを検証
+4. retrieval / curated 側を以下のとおり改善:
+   - `extract_probe_suffix()` で compound input の probe 部分を分離 → secondary retrieval で 私は〜 reply を選ぶ
+   - `curated_short_reply` が compound input の last clause も検査
+   - direct retrieval で query 長の 60% 以上の overlap を要求（短すぎテンプレ衝突防止）
+   - tokenizer の token/char 比 ≥0.7 で unknown-word 判定（confidence 単独より頑健）
+   - `looks_like_single_word` を `の/さ/わ/ぞ/ぜ/ー` particle/tail と verb-phrase ending で強化
+
+### 主訴ケース before/after
+
+| 入力 | v0.2.1 | v0.2.2 |
+| --- | --- | --- |
+| 家にいるよ、あなたは？ | うん、それが正解。 | 私はぼんやりしてる。 |
+| 大丈夫だよ、少し遊ぼうよ | ぼーっとしてから。 | いいね、何して遊ぼうか？ |
+| えっと、どゆこと？ | ついているわけでもないよ。 | ごめん、変な言い方だった… |
+| え？ | どうもー。 | あ、ごめん。わかりにくかったね… |
+| 今日は何してた？ | 家にいた。 | 散歩してた。気持ちよかったよ。 |
+
+### 残課題
+
+- 多ターン context 引きずりは依然として完全解決ではない（87M model の限界）
+- 例:「本いいね、なに読んでる？」(compound 質問) で model gen が脱線
+- corpus 大規模化 / context_length 拡張 / model 拡大は次の段階
+
+## (旧記録) round 1 の見送り判断
 
 slim 化と build までは行ったが、`carry-context` on / max-history-turns=2 の本番設定で
 本物の対話を駆動したところ、probe 単発では出ていなかった崩れが多数再発した:
