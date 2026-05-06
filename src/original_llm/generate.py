@@ -265,6 +265,19 @@ CURATED_SHORT_REPLIES: dict[tuple[str, ...], tuple[str, ...]] = {
         "それはいいね。続きが聞きたい。",
         "うん、いい一日になったね。",
     ),
+    ("今日は何してた", "今日何してた", "今日何してたの", "今日は何してたの"): (
+        "本読んでぼんやりしてた。そっちは？",
+        "家にいたよ、ゆっくりしてた。",
+        "散歩してた。気持ちよかったよ。",
+    ),
+    ("どういうこと", "どゆこと", "えっとどういうこと", "えっとどゆこと"): (
+        "あ、ごめん。わかりにくかったね。もう一回言うね。",
+        "ごめん、変な言い方だった。要するに少し休もうって話。",
+    ),
+    ("遊ぼう", "遊ぼうよ", "少し遊ぼう", "少し遊ぼうよ", "ちょっと遊ぼう"): (
+        "いいね、何して遊ぼうか？",
+        "うん、いいよ。なに話そっか。",
+    ),
 }
 
 # Greetings vs farewells live in disjoint "category" buckets — replying with
@@ -560,6 +573,34 @@ def normalize_chat_user_input(text: str) -> str:
     return normalized
 
 
+PROBE_SUFFIX_NORMS = (
+    "あなたは",
+    "そっちは",
+    "そちらは",
+    "きみは",
+    "君は",
+)
+
+
+SELF_STATE_REPLY_MARKERS = (
+    "私は",
+    "私も",
+    "私？",
+    "わたしは",
+    "わたしも",
+    "ぼちぼち",
+    "ぼんやり",
+    "本読ん",
+    "ぼーっと",
+    "家にい",
+    "家でゆっくり",
+    "ふつう",
+    "まあまあ",
+    "ゆっくりしてる",
+    "出かけて",
+)
+
+
 def normalize_chat_lookup_text(text: str) -> str:
     normalized = normalize_chat_user_input(text)
     normalized = unicodedata.normalize("NFKC", normalized)
@@ -762,22 +803,41 @@ def curated_short_reply(
     avoid_replies: tuple[str, ...] = (),
     rotation_index: int = 0,
 ) -> str | None:
-    lookup = normalize_chat_lookup_text(user_input)
-    if not lookup or len(lookup) > 12:
+    primary = normalize_chat_lookup_text(user_input)
+    if not primary:
         return None
+
+    # Compound inputs like "大丈夫だよ、少し遊ぼうよ" carry their intent in the
+    # last clause; try it as a secondary lookup so curated still fires.
+    last_clause = ""
+    for sep in ("、", ","):
+        if sep in user_input:
+            last_clause = user_input.rsplit(sep, 1)[-1]
+            break
+    last_lookup = normalize_chat_lookup_text(last_clause) if last_clause else ""
+
+    lookups = [primary]
+    if last_lookup and last_lookup != primary:
+        lookups.append(last_lookup)
+
     avoid_norms = {
         normalize_chat_lookup_text(r) for r in avoid_replies if r
     }
     matched_replies: tuple[str, ...] | None = None
-    for keys, replies in CURATED_SHORT_REPLIES.items():
-        for key in keys:
-            key_norm = normalize_chat_lookup_text(key)
-            if not key_norm:
-                continue
-            if lookup == key_norm or (
-                len(lookup) <= 6 and (key_norm in lookup or lookup in key_norm)
-            ):
-                matched_replies = replies
+    for lookup in lookups:
+        if not lookup or len(lookup) > 12:
+            continue
+        for keys, replies in CURATED_SHORT_REPLIES.items():
+            for key in keys:
+                key_norm = normalize_chat_lookup_text(key)
+                if not key_norm:
+                    continue
+                if lookup == key_norm or (
+                    len(lookup) <= 6 and (key_norm in lookup or lookup in key_norm)
+                ):
+                    matched_replies = replies
+                    break
+            if matched_replies is not None:
                 break
         if matched_replies is not None:
             break
@@ -974,6 +1034,27 @@ def select_chat_retrieval_examples(
     ]
 
 
+def extract_probe_suffix(user_input: str) -> str | None:
+    """Return the probe portion ("あなたは" etc.) when input ends with one.
+
+    The compound case is "{statement}, {probe}?" — without splitting we'd match
+    the statement against unrelated weather/closing templates and miss the
+    self-state reply that the probe expects. Returning the probe lets a
+    secondary retrieval target probe → 私は… templates explicitly.
+    """
+    norm = normalize_chat_lookup_text(user_input)
+    for probe in PROBE_SUFFIX_NORMS:
+        if norm.endswith(probe) and len(norm) > len(probe):
+            return probe
+    return None
+
+
+def reply_is_self_state(reply: str) -> bool:
+    """True if the reply describes the speaker's own state (suitable for a probe)."""
+    norm = normalize_chat_lookup_text(reply)
+    return any(marker in norm for marker in SELF_STATE_REPLY_MARKERS)
+
+
 def select_direct_chat_reply(
     user_input: str,
     args: argparse.Namespace,
@@ -991,6 +1072,34 @@ def select_direct_chat_reply(
     if not query_lookup_text or len(query_lookup_text) > 40:
         return None
 
+    avoid_norms = {
+        normalize_chat_lookup_text(reply)
+        for reply in avoid_replies
+        if reply
+    }
+
+    probe = extract_probe_suffix(user_input)
+    if probe is not None:
+        probe_candidates = select_chat_retrieval_candidates(
+            user_input=probe,
+            corpus_dir=retrieval_corpus_dir,
+            user_label=args.user_label,
+            reply_label=args.reply_label,
+            limit=8,
+            min_score=DEFAULT_RETRIEVAL_SCORE_THRESHOLD,
+        )
+        for candidate in probe_candidates:
+            reply = candidate.last_reply_text
+            if not reply:
+                continue
+            if not reply_is_self_state(reply):
+                continue
+            if is_low_quality_reply(candidate.last_user_text, reply):
+                continue
+            if normalize_chat_lookup_text(reply) in avoid_norms:
+                continue
+            return reply
+
     candidates = select_chat_retrieval_candidates(
         user_input=user_input,
         corpus_dir=retrieval_corpus_dir,
@@ -1001,12 +1110,6 @@ def select_direct_chat_reply(
     )
     if not candidates:
         return None
-
-    avoid_norms = {
-        normalize_chat_lookup_text(reply)
-        for reply in avoid_replies
-        if reply
-    }
 
     for candidate in candidates:
         common_length = longest_common_substring_length(

@@ -1111,6 +1111,301 @@ def gen_parameterized_multi_turns(
     return blocks
 
 
+def gen_long_anaphor_multi_turns(
+    rng: random.Random,
+) -> list[Sequence[TurnPair]]:
+    """4-6 turn dialogues whose final 相手 reply must reference an earlier turn.
+
+    The point is to push the SFT loss to *use* prior turns in the history
+    instead of only the last user message. Every block places a topic anchor
+    (food name, place, hobby, animal, etc.) in turn 1 and arranges the final
+    user/reply to be unintelligible without remembering that anchor.
+    """
+    blocks: list[Sequence[TurnPair]] = []
+
+    # ---- food story (5 turns) — final reply repeats the food name ----------
+    food_open_user = ("今日{food}食べた", "{food}食べてきた", "お昼{food}にした")
+    food_open_reply = (
+        "おお、{food}いいね。おいしかった？",
+        "へえ、{food}久しぶり？",
+        "{food}いいね、どこの？",
+    )
+    food_taste_pos = ("うん、すごくおいしかった", "めちゃくちゃおいしかった", "うん、最高")
+    food_taste_react = (
+        "それはなにより、{food}当たりの日だったね。",
+        "いいね、{food}は気分上がるよね。",
+        "うん、{food}って当たり外れあるから当たってよかった。",
+    )
+    food_close_user = ("また食べたい", "明日も食べたいかも", "近いうちにまた行きたい")
+    food_close_reply = (
+        "うん、{food}また一緒に行こう。",
+        "じゃあ次は私もついて行く、{food}気になる。",
+        "{food}リピートしよ、おいしい店覚えとこ。",
+    )
+    for food in FOODS_SAVORY + FOODS_SWEET:
+        for ou, or_ in zip(food_open_user, food_open_reply):
+            for tp, tr in zip(food_taste_pos, food_taste_react):
+                for cu, cr in zip(food_close_user, food_close_reply):
+                    blocks.append(
+                        (
+                            TurnPair(ou.format(food=food), or_.format(food=food)),
+                            TurnPair(tp, tr.format(food=food)),
+                            TurnPair(cu, cr.format(food=food)),
+                        )
+                    )
+
+    # ---- place trip (5 turns) — final reply re-mentions the place ----------
+    place_open_user = ("{place}行ってきた", "今日{place}寄ってきた", "{place}でぶらぶらしてた")
+    place_open_reply = (
+        "おお、{place}どうだった？",
+        "{place}いいね、混んでた？",
+        "{place}ひさしぶり？",
+    )
+    place_react_user = ("すごくよかった", "落ち着いた", "気分転換になった")
+    place_react_reply = (
+        "それはよかった、{place}行くと整うよね。",
+        "うん、{place}そういう良さあるよね。",
+        "わかる、{place}は時間ゆっくりに感じる。",
+    )
+    place_close_user = ("また行きたい", "次は一緒に行こうよ", "天気いい日にまた行く")
+    place_close_reply = (
+        "うん、{place}また行こう。連れてって。",
+        "うん、{place}今度こそ一緒に。",
+        "{place}いい天気の日が一番だね。",
+    )
+    for place in PLACES:
+        for ou, or_ in zip(place_open_user, place_open_reply):
+            for ru, rr in zip(place_react_user, place_react_reply):
+                for cu, cr in zip(place_close_user, place_close_reply):
+                    blocks.append(
+                        (
+                            TurnPair(ou.format(place=place), or_.format(place=place)),
+                            TurnPair(ru, rr.format(place=place)),
+                            TurnPair(cu, cr.format(place=place)),
+                        )
+                    )
+
+    # ---- hobby ramp (4 turns) — final reply names the hobby ----------------
+    hobby_open_user = ("最近{hobby}にハマってる", "{hobby}始めた", "{hobby}が楽しい")
+    hobby_open_reply = (
+        "いいね、{hobby}って心が落ち着くよね。",
+        "へえ、{hobby}どこでやってるの？",
+        "{hobby}いいよね、続いてる？",
+    )
+    hobby_ask_user = ("おすすめある？", "コツとかある？", "なに揃えればいい？")
+    hobby_ask_reply = (
+        "{hobby}なら、最初は気軽な道具で十分だよ。",
+        "{hobby}は無理せず短時間からが続くコツ。",
+        "{hobby}は好きな時間にやるのが一番。",
+    )
+    for hobby in HOBBIES:
+        for ou, or_ in zip(hobby_open_user, hobby_open_reply):
+            for au, ar in zip(hobby_ask_user, hobby_ask_reply):
+                blocks.append(
+                    (
+                        TurnPair(ou.format(hobby=hobby), or_.format(hobby=hobby)),
+                        TurnPair(au, ar.format(hobby=hobby)),
+                    )
+                )
+
+    # ---- animal (5 turns) — final reply uses animal name ------------------
+    animal_open_user = ("{animal}飼いたい", "{animal}見た", "{animal}好き")
+    animal_open_reply = (
+        "いいね、{animal}と暮らせたら楽しそう。",
+        "へえ、{animal}どこで？",
+        "{animal}いいよね、私も好き。",
+    )
+    animal_concern_user = ("でもまだ無理かな", "準備が必要だよね", "今は時期じゃない")
+    animal_concern_reply = (
+        "うん、{animal}迎えるなら準備大事だもんね。",
+        "{animal}は環境作ってからの方がお互い幸せ。",
+        "うん、{animal}にとっても準備された家がいいよね。",
+    )
+    animal_close_user = ("いつかね", "ちゃんと準備する", "夢としてとっておく")
+    animal_close_reply = (
+        "うん、{animal}に出会える日を楽しみに。",
+        "うん、いつか{animal}との生活、応援する。",
+        "{animal}との未来、いいね。",
+    )
+    for animal in ANIMALS:
+        for ou, or_ in zip(animal_open_user, animal_open_reply):
+            for cu, cr in zip(animal_concern_user, animal_concern_reply):
+                for clu, clr in zip(animal_close_user, animal_close_reply):
+                    blocks.append(
+                        (
+                            TurnPair(ou.format(animal=animal), or_.format(animal=animal)),
+                            TurnPair(cu, cr.format(animal=animal)),
+                            TurnPair(clu, clr.format(animal=animal)),
+                        )
+                    )
+
+    # ---- weather plan (4 turns) — final reply references weather ----------
+    weather_pairs = (
+        ("雨", "晴れ"),
+        ("土砂降り", "晴れ"),
+        ("曇り", "晴れ"),
+        ("じめじめした天気", "風が気持ちいい日"),
+        ("風が強い", "穏やかな日"),
+    )
+    for w_now, w_hope in weather_pairs:
+        for opener, opener_reply in (
+            (f"外{w_now}", "うん、こういう日は無理しないでいいよ。"),
+            (f"今日{w_now}", "そっか、{w_now}だと気分も沈むよね。"),
+        ):
+            for plan_user, plan_reply in (
+                ("家にいるよ", "うん、それが正解。"),
+                ("散歩は明日にする", "うん、{w_now}だしね。"),
+                ("出かけるのやめた", "うん、{w_now}だと気が乗らないもんね。"),
+            ):
+                for closer_user, closer_reply in (
+                    (f"明日は{w_hope}になるといいね", f"うん、{w_hope}だったら気持ちよく出かけられる。"),
+                    ("天気回復したら出かけよ", f"うん、{w_hope}になったら一緒に。"),
+                ):
+                    blocks.append(
+                        (
+                            TurnPair(opener, opener_reply.format(w_now=w_now)),
+                            TurnPair(plan_user, plan_reply.format(w_now=w_now)),
+                            TurnPair(closer_user, closer_reply.format(w_hope=w_hope)),
+                        )
+                    )
+
+    # ---- mood support deep (5 turns) — final reply ties back to cause -----
+    mood_open_user = (
+        "なんかつらい",
+        "今日しんどい",
+        "落ち込んでる",
+        "やる気でない",
+        "気分が重い",
+    )
+    causes = (
+        ("仕事で怒られた", "仕事"),
+        ("人間関係つかれた", "人間関係"),
+        ("勉強うまくいかない", "勉強"),
+        ("体調いまいち", "体調"),
+    )
+    for u in mood_open_user:
+        for cause_text, cause_topic in causes:
+            blocks.append(
+                (
+                    TurnPair(u, "うん、無理しないで。話せる範囲で聞くよ。"),
+                    TurnPair(cause_text, "それはきついね、よくがんばってる。"),
+                    TurnPair(
+                        "ちょっと話聞いてくれてありがと",
+                        f"うん、いつでも。{cause_topic}は無理しないで、ちょっとずつね。",
+                    ),
+                )
+            )
+
+    # ---- movie/picnic plan (4 turns) — final reply ties to genre ----------
+    movie_kinds = ("アニメ映画", "邦画", "洋画", "ドキュメンタリー", "コメディ")
+    for kind in movie_kinds:
+        for opener_user, opener_reply in (
+            ("映画見たい", "いいね、何の？"),
+            ("映画でも見ようかな", "なに見るの？"),
+        ):
+            blocks.append(
+                (
+                    TurnPair(opener_user, opener_reply),
+                    TurnPair(kind, f"{kind}いいね、最近よさそうなの出てる？"),
+                    TurnPair("一緒に行こうよ", f"うん、映画館で会おう。{kind}楽しみ。"),
+                )
+            )
+
+    # ---- subject hygiene long (4 turns) — final reply contrasts X and Y ---
+    self_objects = (
+        ("本読んでる", "本"),
+        ("ゲームしてる", "ゲーム"),
+        ("散歩してきた", "散歩"),
+        ("コーヒー飲んでる", "コーヒー"),
+        ("音楽聴いてる", "音楽"),
+        ("家にいる", "家"),
+    )
+    you_objects = (
+        ("ぼんやりしてる", "ぼーっと"),
+        ("仕事してた", "仕事"),
+        ("料理してた", "料理"),
+        ("出かけてた", "外"),
+    )
+    for su, sx in self_objects:
+        for yu, yx in you_objects:
+            blocks.append(
+                (
+                    TurnPair(f"私は{su}", f"そっか、{sx}いいね。"),
+                    TurnPair("あなたは？", f"私は{yu}。"),
+                    TurnPair("お互いゆっくりだね", f"うん、{sx}と{yx}、それぞれの時間ね。"),
+                )
+            )
+
+    # ---- typo / repair recovery (4 turns) ---------------------------------
+    swap_pairs = (
+        ("ラーメン", "うどん"),
+        ("コーヒー", "紅茶"),
+        ("公園", "図書館"),
+        ("映画", "本"),
+    )
+    for original, corrected in swap_pairs:
+        blocks.append(
+            (
+                TurnPair(f"{original}食べたい", f"いいね、{original}行こう。"),
+                TurnPair(f"あ、違う、{corrected}だった", f"あ、ごめん。じゃあ{corrected}にしよ。"),
+                TurnPair("うん、お願い", f"うん、{corrected}気分だね、わかる。"),
+            )
+        )
+
+    # ---- probe → anchor → ambiguous → resolve (5 turns) -------------------
+    # Mirrors the user's failure case: "家にいるよ、あなたは？" → ambiguous probe.
+    self_states_short = (
+        ("家にいる", "家"),
+        ("ちょっと出かけてる", "外"),
+        ("カフェにいる", "カフェ"),
+        ("仕事中", "仕事"),
+    )
+    for state, anchor in self_states_short:
+        blocks.append(
+            (
+                TurnPair(f"今{state}", f"そっか、{anchor}でゆっくり？"),
+                TurnPair("あなたは？", "私は本読んでた。"),
+                TurnPair("読書いいね", f"うん、{anchor}で過ごしてるあなたとは別の静けさかも。"),
+            )
+        )
+
+    # ---- "え？" / "どゆこと？" — repair turn that references prior topic --
+    prior_topics = (
+        ("ラーメン食べた", "ラーメンの話"),
+        ("公園行ってきた", "公園の話"),
+        ("猫見たよ", "猫の話"),
+        ("仕事終わった", "仕事終わった話"),
+    )
+    for prior_user, prior_topic in prior_topics:
+        blocks.append(
+            (
+                TurnPair(prior_user, "おお、いいね。"),
+                TurnPair("え？", f"あ、ごめん。さっきの{prior_topic}の続きね。"),
+                TurnPair("ああ、そういうこと", "うん、わかりにくくてごめん。"),
+            )
+        )
+        blocks.append(
+            (
+                TurnPair(prior_user, "へえ、それでそれで？"),
+                TurnPair("どゆこと？", f"あ、ごめん。{prior_topic}のほう、もっと聞きたかっただけ。"),
+                TurnPair("なるほど", "うん、続き聞かせて。"),
+            )
+        )
+
+    # ---- 6-turn deep food story (extends 5-turn pattern with one more pair)
+    for food in FOODS_SAVORY[:8]:
+        blocks.append(
+            (
+                TurnPair(f"{food}食べたい", f"いいね、{food}おいしいよね。"),
+                TurnPair("一緒に行こうよ", "うん、行こう。今日空いてる？"),
+                TurnPair("夜なら大丈夫", f"じゃあ夜、{food}食べに行こう。"),
+                TurnPair("楽しみ", f"うん、私も。{food}久しぶり。"),
+            )
+        )
+
+    return blocks
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -1163,6 +1458,7 @@ def main() -> int:
     multi_blocks: list[Sequence[TurnPair]] = []
     multi_blocks.extend(gen_parameterized_multi_turns(rng))
     multi_blocks.extend(gen_two_turn_followups(rng))
+    multi_blocks.extend(gen_long_anaphor_multi_turns(rng))
 
     # de-duplicate multi-turn blocks by their stringified form
     seen_blocks: set[str] = set()
