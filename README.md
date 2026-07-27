@@ -140,7 +140,7 @@ original_LLM/
 
 ## Experiment Log
 
-試した設定と結果は [experiments.md](/Users/natsuhirosuzuki/original_LLM/experiments.md) に残す。
+試した設定と結果は [experiments.md](experiments.md) に残す。
 
 最低限、以下を記録する。
 
@@ -167,7 +167,7 @@ uv run python src/data.py --limit 2
 uv run python src/model.py --context-length 256
 ```
 
-Python バージョンは [.python-version](/Users/natsuhirosuzuki/original_LLM/.python-version) と [pyproject.toml](/Users/natsuhirosuzuki/original_LLM/pyproject.toml) で管理する。
+Python バージョンは [.python-version](.python-version) と [pyproject.toml](pyproject.toml) で管理する。
 依存更新時は `uv add` または `uv remove` を使い、`uv lock` を更新する。
 
 ## Training Operations
@@ -409,7 +409,7 @@ uv run python scripts/prepare_dialogue_labeling_batches.py --min-heuristic-score
 
 - `data/intermediate/aozora/dazai/dialogue_batches/`
 
-分類ルールは [dialogue_labeling.md](/Users/natsuhirosuzuki/original_LLM/dialogue_labeling.md) にまとめている。
+分類ルールは [dialogue_labeling.md](dialogue_labeling.md) にまとめている。
 
 ラベル済み batch の検証:
 
