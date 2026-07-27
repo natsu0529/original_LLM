@@ -113,35 +113,25 @@ class RetrievalResolutionTests(unittest.TestCase):
 
     def test_resolve_retrieval_prefers_bundled_chat_seed_over_raw_checkpoint_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir) / "repo"
+            bundled_dir = repo_root / "data" / "chat_seed_friend_natural_v5"
+            bundled_dir.mkdir(parents=True)
             raw_dir = Path(tmp_dir) / "txt"
             raw_dir.mkdir()
             args = argparse.Namespace(retrieval_corpus_dir=None)
 
-            resolved = resolve_retrieval_corpus_dir(
-                args,
-                checkpoint={
-                    "args": {
-                        "data_dir": str(raw_dir),
-                        "reply_loss_label": None,
-                    }
-                },
-            )
+            with mock.patch("original_llm.cli.REPO_ROOT", repo_root):
+                resolved = resolve_retrieval_corpus_dir(
+                    args,
+                    checkpoint={
+                        "args": {
+                            "data_dir": str(raw_dir),
+                            "reply_loss_label": None,
+                        }
+                    },
+                )
 
-            repo_data = Path(__file__).resolve().parents[1] / "data"
-            preferred_order = (
-                repo_data / "chat_seed_friend_natural_v5",
-                repo_data / "chat_seed_friend_natural_v4",
-                repo_data / "chat_seed_friend_natural_v3",
-                repo_data / "chat_seed_friend_casual_mix_v1",
-                repo_data / "chat_seed_real_persona_casual_v1",
-                repo_data / "chat_seed_real_persona_v1",
-                repo_data / "chat_seed_refined_v1",
-                repo_data / "chat_seed_simple",
-            )
-            expected = next(
-                str(candidate.resolve()) for candidate in preferred_order if candidate.is_dir()
-            )
-            self.assertEqual(resolved, expected)
+            self.assertEqual(resolved, str(bundled_dir.resolve()))
 
 
 if __name__ == "__main__":
